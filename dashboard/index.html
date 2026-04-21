@@ -64,6 +64,23 @@
     </div>
   </template>
 
+  <!-- Gate review prompt (prominent, actionable) -->
+  <template x-for="[gateName, gate] in Object.entries(gates || {})" :key="gateName">
+    <div x-show="gate?.status === 'pending'"
+         class="border-b-2 border-accent bg-accent-light">
+      <div class="max-w-7xl mx-auto px-6 py-4 flex items-start justify-between gap-4">
+        <div class="flex-1">
+          <p class="font-heading text-accent-dark font-medium mb-1">Review needed</p>
+          <p class="text-sm text-gray-800" x-text="gate?.prompt || ('Review ' + gateName.replace(/_gate$/, '') + ' stage output, then continue.')"></p>
+        </div>
+        <button @click="resolveGate(gateName)"
+                class="px-4 py-2 rounded bg-accent text-white hover:bg-accent-dark font-medium text-sm whitespace-nowrap">
+          Continue →
+        </button>
+      </div>
+    </div>
+  </template>
+
   <!-- Welcome / empty state -->
   <div x-show="!state?.run_id" class="flex-1 flex items-center justify-center">
     <div class="max-w-xl text-center px-6 py-16">
@@ -156,9 +173,9 @@
                       </div>
                     </div>
                   </td>
-                  <td class="px-4 py-3" x-html="pill(article.stages?.crawl?.status, article.stages?.crawl?.word_count ? article.stages.crawl.word_count + ' words' : '')"></td>
-                  <td class="px-4 py-3" x-html="pill(article.stages?.recommend?.status, recSummary(article))"></td>
-                  <td class="px-4 py-3" x-html="pill(article.stages?.generate?.status, article.stages?.generate?.status === 'completed' ? 'ready' : '')"></td>
+                  <td class="px-4 py-3" x-html="pill(articleStage(article, 'crawl').status, article.stages?.crawl?.word_count ? article.stages.crawl.word_count + ' words' : '')"></td>
+                  <td class="px-4 py-3" x-html="pill(articleStage(article, 'recommend').status, recSummary(article))"></td>
+                  <td class="px-4 py-3" x-html="pill(articleStage(article, 'generate').status, articleStage(article, 'generate').status === 'completed' ? 'ready' : '')"></td>
                   <td class="px-4 py-3">
                     <span x-show="article.stages?.generate?.audit_score" class="font-mono text-xs"
                           :class="(article.stages?.generate?.audit_score || 0) >= 32 ? 'text-accent-dark font-semibold' : 'text-yellow-600'"
@@ -303,9 +320,10 @@
 <script>
 function dashboard() {
   return {
-    version: '0.1.0',
+    version: '0.2.0',
     state: null,
     decisions: null,
+    gates: null,
     pollTimer: null,
     expanded: null,
     runId: null,
@@ -329,14 +347,29 @@ function dashboard() {
           this.state = null;
           return;
         }
-        const [state, decisions] = await Promise.all([
+        const [state, decisions, gates] = await Promise.all([
           fetch(`/api/runs/${this.runId}/state`).then(r => r.json()),
           fetch(`/api/runs/${this.runId}/decisions`).then(r => r.json()).catch(() => ({articles: {}})),
+          fetch(`/api/runs/${this.runId}/gates`).then(r => r.json()).catch(() => ({})),
         ]);
         this.state = state;
         this.decisions = decisions;
+        this.gates = gates;
       } catch (e) {
         console.warn('poll failed', e);
+      }
+    },
+
+    async resolveGate(gateName) {
+      try {
+        await fetch(`/api/runs/${this.runId}/gate`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({gate: gateName, action: 'proceed'}),
+        });
+        // Immediate refresh so the gate banner disappears without waiting for the 1.5s tick
+        await this.tick();
+      } catch (e) {
+        alert('Failed to resolve gate: ' + e);
       }
     },
 
@@ -368,7 +401,21 @@ function dashboard() {
       if (status === 'running')   return `<span class="${base} bg-yellow-50 text-yellow-700"><span class="w-1.5 h-1.5 bg-yellow-500 rounded-full animate-pulse"></span>running</span>`;
       if (status === 'failed')    return `<span class="${base} bg-red-50 text-red-700"><span class="w-1.5 h-1.5 bg-red-500 rounded-full"></span>failed</span>`;
       if (status === 'partial')   return `<span class="${base} bg-orange-50 text-orange-700"><span class="w-1.5 h-1.5 bg-orange-500 rounded-full"></span>partial</span>`;
+      if (status === 'not-started') return `<span class="${base} bg-gray-50 text-gray-400">—</span>`;
       return `<span class="${base} bg-gray-100 text-gray-500">pending</span>`;
+    },
+
+    // Per-article stage status with pipeline-wide fallback so we never show
+    // misleading "pending" on completed work. If a per-article status is
+    // recorded, use it. Otherwise infer from pipeline-wide status.
+    articleStage(article, stageName) {
+      const perArticle = article?.stages?.[stageName];
+      if (perArticle && perArticle.status) return perArticle;
+      const pipelineStatus = this.state?.pipeline?.[stageName]?.status;
+      if (pipelineStatus === 'completed') return {status: 'completed'};
+      if (pipelineStatus === 'running') return {status: 'running'};
+      if (!pipelineStatus || pipelineStatus === 'pending') return {status: 'not-started'};
+      return {status: pipelineStatus};
     },
 
     recSummary(article) {
@@ -423,11 +470,20 @@ function articleDetail(slug) {
 
     async setDecision(recId, action) {
       const runId = window.location.pathname.match(/\/runs\/([^\/]+)\/?/)?.[1];
-      await fetch(`/api/runs/${runId}/actions`, {
+      const resp = await fetch(`/api/runs/${runId}/actions`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({action, slug: this.slug, rec_id: recId}),
       });
+      const body = await resp.json();
+      // Update local view immediately with server-confirmed state
+      if (!this.decisions) this.decisions = {recs: {}};
+      if (!this.decisions.recs) this.decisions.recs = {};
       this.decisions.recs[recId] = action;
+      // Also refresh authoritative decisions from server
+      try {
+        const all = await fetch(`/api/runs/${runId}/decisions`).then(r => r.json());
+        this.decisions = all.articles?.[this.slug] || {recs: {}};
+      } catch (_) {}
     },
 
     async approve() {

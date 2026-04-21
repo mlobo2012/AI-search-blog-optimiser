@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-AI Search Blog Optimiser — local dashboard server.
+AI Search Blog Optimiser — local dashboard server (v0.2.0).
 
-Acts as both:
-1. An MCP server (stdio) exposing `open_dashboard`, `register_run`, `update_state`, `list_runs`, `get_actions` tools.
-2. A local HTTP server on a free port serving the dashboard HTML and a JSON state API.
+Two run modes:
+  - Default (MCP stdio): Claude Cowork spawns this as its MCP server. The MCP
+    side exposes tools for agents to push state updates. HTTP side runs as a
+    DETACHED subprocess so it survives MCP restarts.
+  - --http-daemon: long-lived HTTP server. Spawned by the MCP on first need;
+    survives MCP lifecycle (idle kill, plugin reload, session transitions).
+    Writes PID + port to ~/.ai-search-blog-optimiser/dashboard.lock.
 
-The MCP side lets Claude agents push state updates. The HTTP side lets the user's
-browser render the live dashboard and POST accept/reject decisions back.
+Why detached: in Cowork, MCP stdio servers get killed on idle/session-boundary.
+If the HTTP server were a thread in the MCP process, the browser tab would
+break. Detached daemon keeps the dashboard alive regardless.
 
 Stdlib only. Works on macOS Python 3.8+. Cross-platform where possible.
 """
@@ -19,12 +24,15 @@ import contextlib
 import http.server
 import json
 import os
+import signal
 import socket
 import socketserver
+import subprocess
 import sys
 import threading
 import time
 import traceback
+import urllib.request
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -45,6 +53,7 @@ DASHBOARD_DIR = PLUGIN_ROOT / "dashboard"
 DATA_DIR = Path(os.environ.get("AI_SEARCH_BLOG_OPTIMISER_DATA", Path.home() / ".ai-search-blog-optimiser"))
 RUNS_DIR = DATA_DIR / "runs"
 BRANDS_DIR = DATA_DIR / "brands"
+LOCK_FILE = DATA_DIR / "dashboard.lock"
 
 STATE_LOCK = threading.RLock()
 HTTP_SERVER: socketserver.TCPServer | None = None
@@ -160,6 +169,8 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
             payload = json.loads(body) if body else {}
             if path.startswith("/api/runs/") and path.endswith("/actions"):
                 return self._handle_action(path, payload)
+            if path.startswith("/api/runs/") and path.endswith("/gate"):
+                return self._handle_gate(path, payload)
             self.send_error(404, "Not Found")
         except Exception as e:
             _log(f"POST {self.path} failed: {e}\n{traceback.format_exc()}")
@@ -243,6 +254,9 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
         if remainder == ["decisions"]:
             decisions = _read_json(run_dir / "decisions.json") or {}
             return self._serve_json(decisions)
+        if remainder == ["gates"]:
+            gates = _read_json(run_dir / "gates.json") or {}
+            return self._serve_json(gates)
         if len(remainder) == 2 and remainder[0] == "articles":
             data = _read_json(run_dir / "articles" / f"{remainder[1]}.json")
             if data is None:
@@ -287,6 +301,32 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     # ---- actions -----------------------------------------------------------
 
+    def _handle_gate(self, path: str, payload: dict):
+        """POST /api/runs/{run_id}/gate body: {"gate": "crawl_gate"|"voice_gate"|"recommend_gate", "action": "proceed"|"hold", "note": "..."}"""
+        parts = path.strip("/").split("/")
+        run_id = parts[2]
+        run_dir = RUNS_DIR / run_id
+        if not run_dir.exists():
+            self.send_error(404, "Run not found")
+            return
+        gate_name = payload.get("gate")
+        gate_action = payload.get("action", "proceed")
+        note = payload.get("note")
+        if not gate_name:
+            self.send_error(400, "gate name required")
+            return
+        gates_path = run_dir / "gates.json"
+        with STATE_LOCK:
+            gates = _read_json(gates_path) or {}
+            gate = gates.setdefault(gate_name, {})
+            gate["status"] = "resolved"
+            gate["resolved_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            gate["user_action"] = gate_action
+            if note:
+                gate["user_note"] = note
+            _write_json(gates_path, gates)
+        self._serve_json({"ok": True, "gates": gates})
+
     def _handle_action(self, path: str, payload: dict):
         parts = path.strip("/").split("/")
         run_id = parts[2]
@@ -329,26 +369,183 @@ class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
-def start_http_server() -> int:
-    global HTTP_SERVER, HTTP_PORT, SERVER_THREAD
-    if HTTP_SERVER is not None and HTTP_PORT is not None:
-        return HTTP_PORT
+# ---------------------------------------------------------------------------
+# Detached HTTP daemon lifecycle
+# ---------------------------------------------------------------------------
+
+def _read_lock() -> dict | None:
+    """Read the dashboard lock file if present."""
+    if not LOCK_FILE.exists():
+        return None
+    try:
+        return json.loads(LOCK_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _write_lock(pid: int, port: int) -> None:
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    LOCK_FILE.write_text(json.dumps({
+        "pid": pid,
+        "port": port,
+        "plugin_root": str(PLUGIN_ROOT),
+        "data_dir": str(DATA_DIR),
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }, indent=2), encoding="utf-8")
+
+
+def _clear_lock() -> None:
+    try:
+        LOCK_FILE.unlink()
+    except OSError:
+        pass
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with pid is still running."""
+    try:
+        os.kill(pid, 0)  # signal 0 = check existence
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    return True
+
+
+def _daemon_healthy(port: int) -> bool:
+    """Ping the daemon's /health endpoint."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=0.5) as resp:
+            if resp.status != 200:
+                return False
+            body = json.loads(resp.read().decode("utf-8"))
+            return body.get("status") == "ok"
+    except Exception:
+        return False
+
+
+def _spawn_detached_daemon() -> tuple[int, int]:
+    """Spawn this same script with --http-daemon as a fully detached subprocess.
+    Returns (pid, port) once the daemon writes the lock file.
+    """
+    # Pick a port here so we can return it immediately (daemon uses --port).
     port = _free_port()
-    HTTP_SERVER = ReusableTCPServer(("127.0.0.1", port), DashboardRequestHandler)
-    HTTP_PORT = port
-    SERVER_THREAD = threading.Thread(target=HTTP_SERVER.serve_forever, name="dashboard-http", daemon=True)
-    SERVER_THREAD.start()
-    _log(f"HTTP server listening on http://127.0.0.1:{port}/")
+    args = [
+        sys.executable,
+        os.path.abspath(__file__),
+        "--http-daemon",
+        "--plugin-root", str(PLUGIN_ROOT),
+        "--data-dir", str(DATA_DIR),
+        "--port", str(port),
+    ]
+    # Fully detach: new session, stdin/out/err to /dev/null.
+    # close_fds=True + start_new_session=True severs the lifecycle from the MCP.
+    devnull = subprocess.DEVNULL
+    # On macOS/Linux: start_new_session detaches from the parent's process group.
+    # Windows is not supported by this plugin.
+    proc = subprocess.Popen(
+        args,
+        stdin=devnull,
+        stdout=devnull,
+        stderr=devnull,
+        close_fds=True,
+        start_new_session=True,
+    )
+    # Wait up to 5s for the daemon to come up and write its lock.
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if _daemon_healthy(port):
+            _write_lock(proc.pid, port)
+            _log(f"Spawned detached HTTP daemon pid={proc.pid} port={port}")
+            return proc.pid, port
+        time.sleep(0.1)
+    # If we got here, the daemon didn't come up. Kill and fail.
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    raise RuntimeError(f"Detached HTTP daemon failed to start on port {port} within 5s")
+
+
+def ensure_dashboard_running() -> tuple[int, int]:
+    """Guarantee a detached dashboard HTTP daemon is running.
+    Returns (pid, port). Reuses an existing daemon if still alive+healthy.
+    """
+    lock = _read_lock()
+    if lock:
+        pid = int(lock.get("pid", 0))
+        port = int(lock.get("port", 0))
+        if pid and port and _pid_alive(pid) and _daemon_healthy(port):
+            # Existing daemon is good. Reuse.
+            return pid, port
+        # Stale lock: daemon died or port is dead.
+        _log(f"Stale dashboard lock (pid={pid} port={port}); respawning")
+        _clear_lock()
+    return _spawn_detached_daemon()
+
+
+def start_http_server() -> int:
+    """MCP-side entry: makes sure a detached daemon is running, returns its port."""
+    _pid, port = ensure_dashboard_running()
     return port
 
 
 def stop_http_server() -> None:
+    """MCP-side cleanup — does NOT kill the detached daemon (user expects it to survive)."""
     global HTTP_SERVER, HTTP_PORT
     if HTTP_SERVER is not None:
         HTTP_SERVER.shutdown()
         HTTP_SERVER.server_close()
         HTTP_SERVER = None
         HTTP_PORT = None
+
+
+def kill_detached_daemon() -> bool:
+    """Explicit shutdown for `--stop-dashboard`. Returns True if killed."""
+    lock = _read_lock()
+    if not lock:
+        return False
+    pid = int(lock.get("pid", 0))
+    if pid and _pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            # Wait up to 2s for graceful exit
+            for _ in range(20):
+                if not _pid_alive(pid):
+                    break
+                time.sleep(0.1)
+            if _pid_alive(pid):
+                os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    _clear_lock()
+    return True
+
+
+def run_http_daemon(port: int) -> None:
+    """Long-lived HTTP daemon. Spawned by the MCP via --http-daemon.
+    Exits only on SIGTERM/SIGINT. Does NOT do MCP stdio.
+    """
+    global HTTP_SERVER, HTTP_PORT
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    HTTP_SERVER = ReusableTCPServer(("127.0.0.1", port), DashboardRequestHandler)
+    HTTP_PORT = port
+    _write_lock(os.getpid(), port)
+
+    def _shutdown(signum, frame):
+        try:
+            if HTTP_SERVER is not None:
+                HTTP_SERVER.shutdown()
+        finally:
+            _clear_lock()
+            sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+    try:
+        HTTP_SERVER.serve_forever()
+    finally:
+        _clear_lock()
 
 
 # ---------------------------------------------------------------------------
@@ -398,10 +595,34 @@ MCP_TOOLS = [
     },
     {
         "name": "get_paths",
-        "description": "Return the absolute data_dir, brands_dir, and — if run_id is provided — the run_dir. Use this at the start of any sub-agent that reads/writes files to avoid hard-coding paths. Run state files live under {data_dir}/runs/{run_id}/, brand-voice artefacts under {data_dir}/brands/{peec_project_id}/.",
+        "description": "Return the absolute data_dir, brands_dir, and — if run_id is provided — the run_dir, articles_dir, recommendations_dir, optimised_dir, media_dir, raw_dir, gaps_dir, competitors_dir, peec_cache_dir, state_json, decisions_json, gates_json, run_summary_md. Use this at the start of the slash command to resolve every path you'll pass to sub-agents — never hard-code relative paths.",
         "inputSchema": {
             "type": "object",
             "properties": {"run_id": {"type": "string"}},
+        },
+    },
+    {
+        "name": "set_gate",
+        "description": "Write/update a gate in gates.json for the run. Used by the main session to pause the pipeline for human review. status='pending' opens the gate (dashboard shows Continue button); status='resolved' closes it (auto-proceed used internally when timeout).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "gate": {"type": "string", "description": "e.g. 'crawl_gate', 'voice_gate', 'recommend_gate'"},
+                "status": {"type": "string", "enum": ["pending", "resolved"]},
+                "prompt": {"type": "string", "description": "Message shown to user in dashboard when gate is pending"},
+                "user_action": {"type": "string", "description": "Only when status=resolved; usually 'proceed'"},
+            },
+            "required": ["run_id", "gate", "status"],
+        },
+    },
+    {
+        "name": "get_gates",
+        "description": "Return current gates.json for a run. Main session polls this while waiting for the user's Continue click in the dashboard.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
+            "required": ["run_id"],
         },
     },
     {
@@ -528,6 +749,9 @@ def _tool_register_run(args: dict) -> dict:
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     _write_json(run_dir / "state.json", initial_state)
+    # Seed empty gates.json and decisions.json so agents and dashboard can read them without 404s.
+    _write_json(run_dir / "gates.json", {})
+    _write_json(run_dir / "decisions.json", {"articles": {}})
     return {"run_id": run_id, "path": str(run_dir), "data_dir": str(DATA_DIR), "brands_dir": str(BRANDS_DIR)}
 
 
@@ -586,6 +810,7 @@ def _tool_get_paths(args: dict) -> dict:
         "brands_dir": str(BRANDS_DIR),
         "dashboard_dir": str(DASHBOARD_DIR),
         "plugin_root": str(PLUGIN_ROOT),
+        "lock_file": str(LOCK_FILE),
     }
     if run_id:
         run_dir = RUNS_DIR / run_id
@@ -595,15 +820,50 @@ def _tool_get_paths(args: dict) -> dict:
             paths["recommendations_dir"] = str(run_dir / "recommendations")
             paths["optimised_dir"] = str(run_dir / "optimised")
             paths["media_dir"] = str(run_dir / "media")
+            paths["raw_dir"] = str(run_dir / "raw")
             paths["gaps_dir"] = str(run_dir / "gaps")
             paths["competitors_dir"] = str(run_dir / "competitors")
             paths["peec_cache_dir"] = str(run_dir / "peec-cache")
             paths["state_json"] = str(run_dir / "state.json")
             paths["decisions_json"] = str(run_dir / "decisions.json")
+            paths["gates_json"] = str(run_dir / "gates.json")
+            paths["run_summary_md"] = str(run_dir / "run-summary.md")
         else:
             paths["run_dir"] = None
             paths["error"] = f"Run {run_id} does not exist"
     return paths
+
+
+def _tool_set_gate(args: dict) -> dict:
+    """Main session writes/resolves a gate. gates.json is source of truth; dashboard polls it."""
+    run_id = args["run_id"]
+    gate_name = args["gate"]
+    status = args.get("status", "pending")
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    gates_path = run_dir / "gates.json"
+    with STATE_LOCK:
+        gates = _read_json(gates_path) or {}
+        gate = gates.setdefault(gate_name, {})
+        gate["status"] = status
+        gate["prompt"] = args.get("prompt", gate.get("prompt", ""))
+        if status == "pending":
+            gate["pending_since"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            gate["resolved_at"] = None
+            gate["user_action"] = None
+        elif status == "resolved":
+            gate["resolved_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            gate["user_action"] = args.get("user_action", "proceed")
+        _write_json(gates_path, gates)
+    return {"ok": True, "gate": gate}
+
+
+def _tool_get_gates(args: dict) -> dict:
+    run_id = args["run_id"]
+    run_dir = RUNS_DIR / run_id
+    gates = _read_json(run_dir / "gates.json") or {}
+    return gates
 
 
 TOOL_DISPATCH = {
@@ -615,6 +875,8 @@ TOOL_DISPATCH = {
     "get_decisions": _tool_get_decisions,
     "show_banner": _tool_show_banner,
     "get_paths": _tool_get_paths,
+    "set_gate": _tool_set_gate,
+    "get_gates": _tool_get_gates,
 }
 
 
@@ -702,7 +964,7 @@ def _send(msg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    global PLUGIN_ROOT, RUNS_DIR, BRANDS_DIR, DATA_DIR, DASHBOARD_DIR, HTTP_SERVER, HTTP_PORT
+    global PLUGIN_ROOT, RUNS_DIR, BRANDS_DIR, DATA_DIR, DASHBOARD_DIR, LOCK_FILE, HTTP_SERVER, HTTP_PORT
 
     parser = argparse.ArgumentParser(description="AI Search Blog Optimiser dashboard server")
     parser.add_argument("--plugin-root", type=str, default=str(PLUGIN_ROOT),
@@ -711,9 +973,13 @@ def main() -> None:
                         default=os.environ.get("AI_SEARCH_BLOG_OPTIMISER_DATA", str(Path.home() / ".ai-search-blog-optimiser")),
                         help="Writable data directory for runs/ and brands/ (default: ~/.ai-search-blog-optimiser/).")
     parser.add_argument("--http-only", action="store_true",
-                        help="Skip MCP, run HTTP only (for local dev and QA).")
+                        help="Dev/QA: HTTP only, no MCP, runs in foreground (old v0.1 behaviour).")
+    parser.add_argument("--http-daemon", action="store_true",
+                        help="Long-lived detached HTTP daemon. Spawned by the MCP via --http-daemon. Writes dashboard.lock. Does NOT do MCP stdio.")
+    parser.add_argument("--stop-dashboard", action="store_true",
+                        help="Kill any running detached HTTP daemon and clear the lock.")
     parser.add_argument("--port", type=int, default=0,
-                        help="Fixed HTTP port (0 = auto). --http-only only.")
+                        help="Fixed HTTP port (0 = auto).")
     args = parser.parse_args()
 
     PLUGIN_ROOT = Path(args.plugin_root).resolve()
@@ -721,13 +987,13 @@ def main() -> None:
     DATA_DIR = Path(args.data_dir).expanduser().resolve()
     RUNS_DIR = DATA_DIR / "runs"
     BRANDS_DIR = DATA_DIR / "brands"
+    LOCK_FILE = DATA_DIR / "dashboard.lock"
 
-    # Verify writability up-front — this is the root cause of v0.1.0 failures.
+    # Verify writability up-front.
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
         BRANDS_DIR.mkdir(parents=True, exist_ok=True)
-        # Write a probe file to confirm the dir is actually writable.
         probe = DATA_DIR / ".writable-probe"
         probe.write_text("ok")
         probe.unlink()
@@ -736,11 +1002,20 @@ def main() -> None:
         _log("Set --data-dir or AI_SEARCH_BLOG_OPTIMISER_DATA to a writable path.")
         sys.exit(2)
 
-    _log(f"plugin_root (read-only assets): {PLUGIN_ROOT}")
-    _log(f"data_dir (writable state):      {DATA_DIR}")
+    if args.stop_dashboard:
+        killed = kill_detached_daemon()
+        _log("daemon stopped" if killed else "no running daemon")
+        return
+
+    if args.http_daemon:
+        # Detached long-lived HTTP daemon. Does NOT do MCP stdio.
+        port = args.port or _free_port()
+        _log(f"[http-daemon] pid={os.getpid()} port={port} plugin_root={PLUGIN_ROOT}")
+        run_http_daemon(port)
+        return
 
     if args.http_only:
-        # Dev/QA mode: serve the dashboard on a fixed port without MCP stdio.
+        # Dev/QA: foreground HTTP without MCP.
         port = args.port or _free_port()
         HTTP_SERVER = ReusableTCPServer(("127.0.0.1", port), DashboardRequestHandler)
         HTTP_PORT = port
@@ -753,6 +1028,9 @@ def main() -> None:
             stop_http_server()
         return
 
+    _log(f"plugin_root (read-only assets): {PLUGIN_ROOT}")
+    _log(f"data_dir (writable state):      {DATA_DIR}")
+    _log(f"lock_file:                      {LOCK_FILE}")
     try:
         _mcp_loop()
     except KeyboardInterrupt:

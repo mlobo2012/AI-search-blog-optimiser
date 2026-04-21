@@ -2,6 +2,36 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.2.0] — 2026-04-21
+
+Major architectural refactor after live-run feedback. The pipeline now actually delivers the human-in-the-loop dashboard experience that was broken in v0.1.
+
+### Fixed
+- **Orchestrator sub-agent removed.** The slash command now runs orchestration directly in the main Claude session — no handoff. This fixes: dashboard never auto-opened (only main-session MCP calls spawn browser side effects), parallel Task dispatch was serialised, and mid-pipeline context compaction from redundant sub-agent indirection.
+- **Dashboard HTTP daemon detached from MCP lifecycle.** The MCP process can now be killed/restarted (normal Cowork idle behaviour) without killing the browser tab. Daemon writes `dashboard.lock` (PID + port); next MCP startup reuses if alive, respawns if dead. URL stays stable across MCP restarts.
+- **Per-article stage status display.** Dashboard no longer shows "pending" on completed articles just because the pipeline-wide stage hasn't finished the last batch. New `articleStage()` helper uses per-article data when present and infers sensibly from pipeline-wide status otherwise.
+- **Dashboard Continue-button flow.** New `POST /api/runs/{id}/gate` endpoint; dashboard polls `gates.json` and renders a prominent Continue banner when a gate is pending.
+- **Accept/reject buttons round-trip immediately.** Immediate re-fetch after POST so the UI reflects the decision without waiting for the 1.5s tick.
+
+### Added
+- New MCP tools: `set_gate`, `get_gates` for the main session to pause pipeline between stages for human review. Dashboard polls and user clicks Continue to resolve.
+- `--http-daemon` mode (spawned by MCP, long-lived, independent).
+- `--stop-dashboard` flag to kill the daemon cleanly.
+- Lock file at `~/.ai-search-blog-optimiser/dashboard.lock` with PID + port.
+- `tests/dashboard_e2e_test.py` — smoke test for daemon + gate + accept/reject flow.
+- `--no-gates` flag on `/blog-optimiser` to skip all human gates (for autonomous runs).
+
+### Changed
+- `commands/blog-optimiser.md`: now tells main session to run orchestration directly, not hand off.
+- `skills/blog-optimiser-pipeline/SKILL.md`: rewritten as the main-session playbook (was: sub-agent orchestrator instructions). Adds explicit gate mechanism, parallelism-in-single-message rule, ≤300 token sub-agent summary cap.
+- `agents/orchestrator.md`: **DELETED**. Its logic moved into the skill.
+- `dashboard/server.py`: detached daemon, 10 MCP tools (added `set_gate`, `get_gates`; `get_paths` now returns `gates_json` and `run_summary_md`).
+- `dashboard/index.html`: v0.2.0 gate banner, `articleStage()` helper, re-fetch after POST.
+
+### Migration from v0.1.x
+- `~/.ai-search-blog-optimiser/` paths unchanged — v0.1 runs still readable.
+- If you had a v0.1 dashboard process running, `--stop-dashboard` cleans it up. Next v0.2 run spawns a fresh detached daemon.
+
 ## [0.1.1] — 2026-04-21
 
 ### Fixed

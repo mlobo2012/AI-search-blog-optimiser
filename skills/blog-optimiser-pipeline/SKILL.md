@@ -1,87 +1,230 @@
 ---
 name: blog-optimiser-pipeline
-description: Orchestration playbook for the AI Search Blog Optimiser pipeline. Use when running or resuming the /blog-optimiser command. Defines the 4-stage flow, context management rules, model allocation, parallelism caps, error handling, and the embedded 15-point GEO + 40-point audit rubric so the plugin works even when the user's environment lacks external skill banks.
-version: 0.1.0
+description: Canonical orchestration playbook for the AI Search Blog Optimiser pipeline. Runs IN THE MAIN SESSION (not via a sub-agent). Defines the 7-stage flow, disk-first state writes, gate mechanism for human-in-the-loop, parallelism pattern, and the embedded 15-point GEO + 40-point audit rubric for the recommender to use when the user's external skill banks aren't available.
+version: 0.2.0
 ---
 
-# Blog Optimiser Pipeline
+# Blog Optimiser Pipeline (v0.2)
 
-The canonical playbook consumed by the `blog-optimiser-orchestrator` agent. Encodes everything Claude needs to run the pipeline robustly without requiring external skill banks to be installed.
+The canonical playbook executed BY THE MAIN SESSION when `/blog-optimiser` runs. This replaces the v0.1 pattern where a `blog-optimiser-orchestrator` sub-agent drove the flow — that handoff is removed.
 
-## Stages
+## Why main-session orchestration
 
-1. **Prereq validation** — verify Peec MCP, Crawl4AI MCP, dashboard server. Fall back to generic mode if Peec is unavailable; hard-fail if Crawl4AI is unavailable.
-2. **Peec project resolution** — `list_projects` → auto-match domain → set `role` → `register_run`.
-3. **Crawl** — sequential per-article extraction via the `blog-crawler` sub-agent.
-4. **Voice extraction** — single call to `voice-extractor` sub-agent.
-5. **Recommend** — fan out `recommender` sub-agents (cap=3 concurrent); each spawns its own `peec-gap-reader` + `competitor-crawler`.
-6. **Generate** — fan out `generator` sub-agents (cap=3 concurrent).
-7. **Finalise** — write `run-summary.md`, push final state.
+- **Browser opens only fire from the main session.** `mcp__blog-optimiser-dashboard__open_dashboard` produces a desktop-level side effect (the browser tab). When called from a sub-agent, Cowork silently drops the side effect.
+- **Parallelism is cleaner.** Multiple `Task` calls in a single main-session message run concurrently. A handoff to a sub-agent adds indirection and risks mid-run context compaction.
+- **Context stays lean.** The main session never reads article bodies; it passes paths + receives ≤300-token summaries. Compaction triggers that broke v0.1.1 don't fire.
 
-## Context management rules
+## The 7 stages
 
-- **The orchestrator never reads article bodies.** It passes file paths to sub-agents and receives ≤ 500-token summaries.
-- **Disk is shared memory.** All cross-agent state lives in `{run_dir}/`.
-- **Each sub-agent loads what it needs, nothing more.** `recommender` loads the audit rubric + GEO rules; `blog-crawler` loads none.
-- **1M context windows on Cowork (Opus 4.6/4.7)** remove token-budget pressure on single-agent steps — but the sub-agent pattern stays for parallelism, context cleanliness, and failure isolation.
+```
+0. Prereq validation             → open dashboard, check Peec + Crawl4AI MCPs
+1. Peec project resolution       → list_projects, auto-match domain, register_run
+2. Blog crawl                    → Task(blog-crawler) — serial, writes articles/*.json
+   GATE                          → user reviews crawled list in dashboard, clicks Continue
+3. Voice extraction              → Task(voice-extractor) — one-shot
+   GATE                          → user reviews voice summary, clicks Continue
+4. Recommendations (parallel × 3) → Task(recommender) fan-out in batches of 3
+   GATE                          → user reviews accept/reject toggles, clicks Continue
+5. Article generation (parallel × 3) → Task(generator) fan-out in batches of 3
+6. Finalise                      → write run-summary.md, final state update
+```
 
-## Model allocation
+`--no-gates` skips the gate polling. `--resume {run_id}` picks up from the last-completed stage per article.
 
-| Agent | Model | Reason |
-|---|---|---|
-| orchestrator | opus | Multi-step planning, error recovery |
-| blog-crawler | haiku | Mechanical extraction × N articles — cost-sensitive |
-| voice-extractor | sonnet | Stylistic synthesis, one-shot |
-| peec-gap-reader | sonnet | Data routing + light reasoning |
-| competitor-crawler | haiku | Structured extraction × 5 URLs |
-| recommender | opus | The demo money shot — judgment quality matters |
-| generator | opus | Brand-voice rewriting quality |
+## Stage 0 — Prereqs + dashboard
 
-## Parallelism
+**As the main session**, execute in this exact order:
 
-Stages 5 and 6 fan out articles with concurrency cap = 3. Balances throughput vs. Anthropic rate limits and Peec MCP limits.
+1. Call `mcp__blog-optimiser-dashboard__open_dashboard` with `{open_browser: true}`. Capture the returned URL. This launches the dashboard HTTP server (if not running) and opens the user's default browser.
 
-## Checkpointing
+2. Call `mcp__blog-optimiser-dashboard__get_paths`. Capture all absolute paths you'll pass to sub-agents (`data_dir`, `brands_dir`, `runs_dir`, and — once the run is registered — `run_dir`, `articles_dir`, `recommendations_dir`, `optimised_dir`, `media_dir`, `raw_dir`, `gaps_dir`, `competitors_dir`, `peec_cache_dir`, `state_json`, `decisions_json`).
 
-Every sub-agent write is atomic (tmp + rename). `state.json` updates after every sub-agent returns. `--resume {run_id}` picks up from last completed stage per article.
+3. Probe Peec: call `mcp__peec__list_projects` with empty args. If it fails, note Peec unavailable and set `mode=generic`.
 
-## Error handling
+4. Probe Crawl4AI: call `mcp__c4ai-sse__ask` with `{"query":"ping","url":"https://example.com"}`. If it fails, **hard-fail** with a `show_banner` error and stop. There's no fallback for crawling.
 
-- MCP timeout → retry once with exponential backoff (2s, 4s). Second failure → log to state, continue.
-- Sub-agent fails → retry once. Second failure → mark `failed` on the article, continue the run.
-- Rate limit → exponential backoff up to 60s; state shows `waiting on rate limit`.
-- Never halt the whole run on a single article failure.
+## Stage 1 — Peec project resolution
 
-## Embedded GEO rules (the 15-point checklist)
+If Peec is available:
 
-When external skill banks (Marco's gstack `geo-content-engineering` etc.) aren't available, agents use these embedded rules. Evidence citations are Peec/Profound 2025-2026 research.
+1. Parse domain from the blog URL (e.g., `granola.ai` from `https://www.granola.ai/blog`).
+2. The `list_projects` response you captured in stage 0 is your project list. For each project, check if its tracked brand domain matches.
+3. **One match** → auto-select, `role=own`, proceed silently.
+4. **Multiple or none** → write a pending gate to `gates.json` asking the user to pick a project via the dashboard. Poll the gate.
+5. Call `mcp__blog-optimiser-dashboard__register_run` with `{blog_url, brand_name, peec_project_id, role}`. It creates `runs/{run_id}/` with all subdirs and an initial `state.json`.
+6. Use the returned paths for the rest of the pipeline.
 
-1. **Trust block at top** — 30–60 word direct answer, followed by 1–2 atomic paragraphs with cited sources + visible last-updated date + named author. Highest-leverage single change.
-2. **Atomic paragraphs** — no paragraph > ~150 words or ~3 sentences for primary claims. Dense blocks aren't chunk-extractable.
-3. **Question-based H2/H3** — every heading mirrors an actual user prompt. Engines match chunks to prompts.
-4. **Tables for structured data** — pricing, feature matrices, specs in `<table>`, not prose. Top-5 citation driver.
+If Peec is unavailable, register the run with `peec_project_id=generic-{domain-slug}` and `role=unknown`. Push an info banner explaining generic mode.
+
+## Stage 2 — Blog crawl
+
+Dispatch the crawler:
+
+```
+Task(
+  subagent_type="blog-crawler",
+  prompt="""
+  run_id: {run_id}
+  blog_url: {blog_url}
+  max_articles: {max_articles}
+  articles_dir: {articles_dir}
+  media_dir: {media_dir}
+  raw_dir: {raw_dir}
+  state_json: {state_json}
+  """
+)
+```
+
+Wait for completion. The crawler writes `{articles_dir}/*.json` + downloaded images and returns a summary like `17 articles captured: [slugs...]; 1 partial (timeout on /blog/X)`.
+
+**After completion, YOU (main session) update state.json directly** — don't rely on the crawler's state pushes alone:
+
+1. Read current `state_json` via Read tool.
+2. Merge: `pipeline.crawl.status="completed"`, `pipeline.crawl.count=N`, articles[] populated.
+3. Write back atomically (Write tool, overwriting is fine since the file is yours).
+4. Call `mcp__blog-optimiser-dashboard__update_state` with the same fragment as a best-effort browser wake-up. If it fails, the browser's next 1.5s poll reads disk and gets the truth.
+
+**Crawl gate.** Unless `--no-gates`: write to `{run_dir}/gates.json`:
+
+```json
+{
+  "crawl_gate": {
+    "status": "pending",
+    "pending_since": "ISO-8601",
+    "prompt": "Review the crawled articles in the dashboard. Deselect any you want to skip, then click Continue.",
+    "resolved_at": null,
+    "user_action": null
+  }
+}
+```
+
+Poll `gates.json` every 10 seconds for up to 5 minutes. The dashboard's Continue button writes `resolved_at` and `user_action="proceed"`. On timeout, auto-proceed and log it in state.json.
+
+## Stage 3 — Voice extraction
+
+```
+Task(
+  subagent_type="voice-extractor",
+  prompt="""
+  run_id: {run_id}
+  peec_project_id: {peec_project_id}
+  role: {role}
+  articles_dir: {articles_dir}
+  brands_dir: {brands_dir}
+  """
+)
+```
+
+Returns a ≤150-token summary + writes `{brands_dir}/{peec_project_id}/brand-voice.md` (or the competitor-view path).
+
+Update state.json with `pipeline.voice.status="completed"` + the one-sentence summary.
+
+**Voice gate** unless `--no-gates`. Same pattern as crawl gate.
+
+## Stage 4 — Recommendations (parallel × 3)
+
+For each article, dispatch a recommender. **Dispatch in batches of 3 IN A SINGLE MESSAGE** for true parallelism:
+
+```
+(single assistant message, three Task calls)
+Task(subagent_type="recommender", prompt="...article-1...")
+Task(subagent_type="recommender", prompt="...article-2...")
+Task(subagent_type="recommender", prompt="...article-3...")
+```
+
+Each recommender input includes: `run_id, article_slug, peec_project_id, role, mode, articles_dir, recommendations_dir, gaps_dir, competitors_dir, peec_cache_dir, brands_dir`.
+
+When all 3 return, update state.json with `pipeline.recommend.completed_articles += 3`, merge per-article stage updates, write disk + push MCP. Then dispatch the next batch.
+
+If any recommender fails: retry once. Second failure: mark that article's recommend stage `status=failed`, continue.
+
+When all articles are recommended: state.json `pipeline.recommend.status="completed"`.
+
+**Recommend gate** unless `--no-gates`. Prompt: "Review the recommendations for each article in the dashboard. Accept/reject individual recommendations — anything you don't explicitly reject will be applied. Click Continue when ready."
+
+## Stage 5 — Article generation (parallel × 3)
+
+Same batching pattern. Generator input: `run_id, article_slug, peec_project_id, articles_dir, recommendations_dir, optimised_dir, media_dir, brands_dir, decisions_json`.
+
+The generator re-reads `decisions_json` inside its run to respect any user rejections.
+
+After each batch, update state.json. When all articles generated: state.json `pipeline.generate.status="completed"`.
+
+## Stage 6 — Finalise
+
+1. Write `{run_dir}/run-summary.md` — aggregate table of before/after scores, approval status, path to each article's handoff doc.
+2. Update state.json with `banners[]` entry: info severity, message "Run complete. Review approved articles in the dashboard or in {optimised_dir}."
+3. Return concise summary to the user (≤500 tokens): counts, dashboard URL, run path.
+
+## Gate mechanism details
+
+### Writing a gate
+
+```python
+# Conceptual — do this via Write tool
+{
+  "crawl_gate": { "status": "pending", "pending_since": "...", "prompt": "..." },
+  "voice_gate": { "status": "not-pending" },
+  "recommend_gate": { "status": "not-pending" }
+}
+```
+
+### Polling a gate
+
+Use a Bash loop. Check once every 10s. Timeout at 5 minutes.
+
+```bash
+for i in $(seq 30); do
+  status=$(python3 -c "import json; print(json.load(open('{gates_json}')).get('crawl_gate',{}).get('status','?'))")
+  if [ "$status" = "resolved" ]; then break; fi
+  sleep 10
+done
+```
+
+If the loop exits without `resolved`, the gate timed out — auto-proceed and note in state.json.
+
+### Dashboard Continue button
+
+The dashboard's `POST /api/runs/{run_id}/gate` with `{"gate": "crawl_gate", "action": "proceed"}` writes `resolved_at` and `user_action="proceed"` to gates.json.
+
+## Resume mode
+
+`--resume {run_id}`:
+1. Read `{run_dir}/state.json`. For each stage, check status.
+2. If crawl is `completed`, skip stage 2. Otherwise resume with the list of articles that don't have `stages.crawl.status="completed"`.
+3. Same logic for voice, recommend, generate.
+4. Never redo completed work.
+
+## Embedded 15-point GEO checklist
+
+(Used by the recommender when the user's external skill banks aren't installed.)
+
+1. **Trust block at top** — 30–60 word direct answer, followed by 1–2 atomic paragraphs with cited sources + visible last-updated date + named author.
+2. **Atomic paragraphs** — no paragraph > ~150 words or ~3 sentences for primary claims.
+3. **Question-based H2/H3** — every heading mirrors an actual user prompt.
+4. **Tables for structured data** — pricing, feature matrices, specs in `<table>`, not prose.
 5. **Concrete numbers in titles/H2s** — "7 X for Y", not "Several X to consider".
-6. **Current-year modifier** — 2026 in title, slug, at least one H2. Engines inject year modifiers during fanout.
-7. **Target 1,500–2,500 words** — Profound benchmark; not 500, not 5,000.
-8. **Specialized schema** — FAQPage, HowTo, Product, Person, Organization, DefinedTerm, Review over generic Article. FAQ schema = biggest single citation lift.
-9. **Cite primary sources inline** — `.gov`, `.edu`, analyst firms, named studies as "According to [NIH, 2025], …".
-10. **Named, credentialed author + Person schema** — full name, role, credentials, LinkedIn, photo. ~41% higher citation likelihood. Avoid "Staff".
-11. **Original data or framework** — at least one proprietary stat, named framework, first-hand case with numbers. Recycled content doesn't earn citations.
-12. **Listicle / comparison / how-to format bias** — 52% of listicles achieve ≥2.0 citation rate on ChatGPT. BUT do not rank your own product #1 in your own listicle (self-promo filtered 3× harder).
-13. **Shippable-noun presence** — embed concrete buyable nouns ("meeting notes app" not "productivity tool"). Apparel 62% / Physical 56% / Consumables 30% ChatGPT Shopping trigger rates.
-14. **Multimodal enrichment** — products cited most show 848% more FAQs, 103% more videos, 36% higher ratings, 23% more spec entries vs uncited.
-15. **Chunk-extractability self-test** — every H2 section must answer its implied question standalone.
+6. **Current-year modifier** — 2026 in title, slug, at least one H2.
+7. **Target 1,500–2,500 words** — Profound benchmark.
+8. **Specialized schema** — FAQPage, HowTo, Product, Person, Organization over generic Article.
+9. **Cite primary sources inline** — `.gov`, `.edu`, analyst firms as "According to [NIH, 2025], …".
+10. **Named, credentialed author + Person schema** — avoid "Staff" bylines.
+11. **Original data or framework** — at least one proprietary stat, named framework, or first-hand case.
+12. **Listicle / comparison / how-to format bias** — but NEVER rank your own product #1 in a self-promo listicle.
+13. **Shippable-noun presence** — concrete buyable nouns for commerce pages.
+14. **Multimodal enrichment** — FAQs, videos, images, specs lift citation rates.
+15. **Chunk-extractability self-test** — every H2 section answers its implied question standalone.
 
 ## Embedded 40-point audit rubric
 
-Scored binary pass/fail, total 40 (minimum passing 32).
+Scored binary pass/fail. Total 40. Minimum passing 32.
 
 ### Retrieval foundation (6 pts)
 - [ ] Robots.txt allows major AI crawlers (GPTBot, ClaudeBot, PerplexityBot, Google-Extended)
 - [ ] Canonical URL set correctly
 - [ ] Meta description present, 120–155 chars
 - [ ] Alt text on ≥80% of images
-- [ ] Updated-at date within last 12 months (or clearly marked evergreen)
+- [ ] Updated-at date within last 12 months
 - [ ] Semantic HTML (proper H1→H6 hierarchy, `<article>`/`<section>`)
 
 ### Chunk extractability (8 pts)
@@ -89,9 +232,9 @@ Scored binary pass/fail, total 40 (minimum passing 32).
 - [ ] Atomic paragraph ratio ≥ 0.6
 - [ ] H2s phrased as user prompts (question or imperative)
 - [ ] ≥1 table for structured data where relevant
-- [ ] ≥1 concrete number/stat in the title or an H2
+- [ ] ≥1 concrete number/stat in title or an H2
 - [ ] Every H2 section extractable standalone
-- [ ] Current-year modifier present (title OR H2 OR slug)
+- [ ] Current-year modifier present
 - [ ] Word count in 1,200–3,000 band
 
 ### Schema & entities (6 pts)
@@ -118,106 +261,21 @@ Scored binary pass/fail, total 40 (minimum passing 32).
 - [ ] Not a self-promo listicle (own product not at #1/#2)
 - [ ] External citation register ≥ median for category
 
-### Article-type-specific (8 pts, varies by type)
-See embedded presets below.
+### Article-type-specific (8 pts)
+See per-type presets: listicle, how-to, comparison, glossary, case-study, pillar, opinion, product. Each swaps 8 points in.
 
-## Article-type presets (8 pts each)
+## Per-engine citation benchmarks
 
-### Listicle
-- [ ] Ranked items with named criteria
-- [ ] Intro comparison table above fold
-- [ ] Each item has 40–200w standalone answer
-- [ ] Named author with credentials
-- [ ] NOT self-promotional
-- [ ] Current-year modifier in title
-- [ ] Internal cross-links to each item's detail page
-- [ ] ItemList schema
+- **ChatGPT**: target ≥ 2.0 citation rate (average > 2.5)
+- **Google AI Mode**: target 1.1–1.5 (average > 1.2)
+- **Perplexity**: target 1.5–2.0 (average 0.5 — don't over-index on Perplexity)
 
-### How-to
-- [ ] Numbered steps, each standalone
-- [ ] HowTo schema with step properties
-- [ ] Total time estimate visible
-- [ ] Tools / prerequisites listed upfront
-- [ ] Images or video per step where applicable
-- [ ] FAQ section for common failure modes
-- [ ] Troubleshooting block
-- [ ] Year modifier if time-sensitive
-
-### Comparison
-- [ ] Comparison table above fold
-- [ ] Balanced coverage (not biased)
-- [ ] Named criteria with rationale
-- [ ] Pricing included and dated
-- [ ] Verdict / "when to choose" section
-- [ ] Both products' named author commentary
-- [ ] Article + FAQPage schema
-- [ ] Link to each product's standalone page
-
-### Glossary
-- [ ] 30–60w definition in trust block
-- [ ] DefinedTerm schema
-- [ ] Synonyms / aliases listed
-- [ ] 2–3 examples in context
-- [ ] Related-terms cross-links
-- [ ] "Not to be confused with" block
-- [ ] Elaboration after definition
-- [ ] FAQPage if ≥3 questions
-
-### Case study
-- [ ] Named client with permission
-- [ ] Problem → Action → Result structure
-- [ ] ≥3 quantified outcomes
-- [ ] Timeframe stated
-- [ ] Method / approach detail
-- [ ] Client quote with role + full name
-- [ ] Article schema with author
-- [ ] Linked to the product/service page
-
-### Pillar
-- [ ] Table of contents jump-linked
-- [ ] Every H2 extractable
-- [ ] Cross-links to related detail pages
-- [ ] Summary of key points at top
-- [ ] Glossary/definitions section
-- [ ] FAQ section (5+ questions)
-- [ ] Multi-schema (Article + FAQPage + HowTo if applicable)
-- [ ] Last-updated date prominent
-
-### Opinion
-- [ ] Clear thesis in trust block
-- [ ] Named, credentialed author (higher bar)
-- [ ] Supporting evidence with inline citations
-- [ ] Counter-argument section
-- [ ] Original framework or data
-- [ ] Author's credential relevant to topic
-- [ ] Publish AND last-updated dates
-- [ ] Person schema linked to author
-
-### Product
-- [ ] Product schema with all required fields
-- [ ] FAQPage for ≥3 Q&A
-- [ ] Review / AggregateRating schema
-- [ ] Rich enrichment: FAQs, video, rating, specs
-- [ ] Shippable-noun in description
-- [ ] Natural-language description
-- [ ] Variants/sizes/compatibility
-- [ ] Natural-language URL slug
+Metrics `visibility`, `share_of_voice`, `retrieved_percentage` are 0–1 ratios (×100 for display). `sentiment` is 0–100. `position` is rank (lower = better). `retrieval_rate` and `citation_rate` are averages — **never** ×100.
 
 ## Strategic non-goals
 
 Agents must not:
-- Generate mass AI content (Schmidt: 100% of pages removed under 2024 Google spam policy had AI content).
-- Optimise for a single engine (89% of cited domains diverge between ChatGPT and Perplexity).
-- Publish self-promo listicles ranking own brand #1.
-- Use universal citation-rate thresholds (ChatGPT target ≥2.0, Perplexity 1.5–2.0, Google AI Mode 1.1–1.5).
-- Auto-push to a CMS.
-
-## Per-engine benchmarks
-
-| Engine | Citation rate target | Avg |
-|---|---|---|
-| ChatGPT | ≥ 2.0 | > 2.5 |
-| Google AI Mode | 1.1–1.5 | > 1.2 |
-| Perplexity | 1.5–2.0 | 0.5 |
-
-Display metrics as per the Peec MCP rules: visibility/SoV/retrieved_percentage are 0-1 ratios (×100 for display); sentiment is 0-100; citation_rate is an average (never × 100); position is rank (lower = better).
+- Generate mass AI content (100% of pages removed under Google's 2024 spam policy had AI content)
+- Optimise for a single engine (89% of cited domains diverge between ChatGPT and Perplexity)
+- Publish self-promo listicles ranking own brand #1
+- Auto-push to a CMS
