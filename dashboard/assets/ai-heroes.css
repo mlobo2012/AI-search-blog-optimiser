@@ -1,0 +1,54 @@
+/* AI Heroes brand theme for Blog Optimiser dashboard.
+   Mirrors src/app/globals.css from mlobo2012/ai-heroes-website. */
+
+@font-face {
+  font-family: 'Miftah';
+  src: url('/static/assets/fonts/Miftah.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Outfit Variable';
+  src: url('/static/assets/fonts/Outfit-Variable.ttf') format('truetype-variations');
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Outfit';
+  src: url('/static/assets/fonts/Outfit-Variable.ttf') format('truetype-variations');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  --ai-heroes-accent: #00AEEF;
+  --ai-heroes-accent-dark: #0090C8;
+  --ai-heroes-accent-light: #E6F7FD;
+  --ai-heroes-surface-light: #FAFAFA;
+  --ai-heroes-surface-dark: #0A0A0A;
+}
+
+/* Subtle brand animations */
+@keyframes ai-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.ai-pulse { animation: ai-pulse 1.4s ease-in-out infinite; }
+
+/* Table row hover accent border */
+tbody tr:hover {
+  box-shadow: inset 2px 0 0 var(--ai-heroes-accent);
+}
+
+/* Details marker tidy-up */
+details > summary {
+  list-style: none;
+}
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: '▸ '; transition: transform 0.15s; display: inline-block; }
+details[open] > summary::before { content: '▾ '; }
+
+/* Print / PDF export styling for handoff previews */
+@media print {
+  header, footer, .no-print { display: none !important; }
+  body { background: white; }
+}

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "blog-optimiser-dashboard": {
+      "command": "python3",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dashboard/server.py",
+        "--plugin-root",
+        "${CLAUDE_PLUGIN_ROOT}"
+      ]
+    }
+  }
+}

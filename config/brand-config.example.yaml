@@ -1,0 +1,36 @@
+# AI Search Blog Optimiser — brand config
+#
+# The plugin works WITHOUT any config — it auto-detects your Peec project on
+# first run and caches the selection. This example is only for power users who
+# want deterministic behaviour or to pre-seed competitor URLs for generic mode.
+#
+# Actual per-brand config is written automatically to
+# .context/brands/{peec_project_id}/config.yaml on first run.
+
+brand:
+  name: Granola                          # friendly display name
+  blog_url: https://www.granola.ai/blog  # the URL /blog-optimiser points at
+  peec_project_id: null                  # leave null; resolved on first run
+  role: own                              # 'own' or 'competitor'
+
+runtime:
+  max_articles_per_run: 20               # soft cap; dashboard surfaces "showing N of M"
+  min_voice_samples: 8                   # below this, voice confidence flagged 'low'
+  competitor_crawl_cap: 5                # max competitor URLs crawled per article
+  recommender_concurrency: 3             # parallel fan-out cap
+  generator_concurrency: 3
+
+branding:
+  theme: ai-heroes                       # dashboard theme — currently only 'ai-heroes'
+
+generic_mode:
+  # Used when Peec isn't connected OR no Peec project matches the blog domain.
+  # Supply competitor URLs per topic so the recommender has SOMETHING to
+  # benchmark against. If left empty, recommendations fall back to Schmidt
+  # rules only (still useful, just less live-data-grounded).
+  competitor_urls_by_topic:
+    # "meeting productivity":
+    #   - https://otter.ai/blog/take-better-notes
+    #   - https://fireflies.ai/blog/meeting-notes-101
+    # "async communication":
+    #   - https://www.atlassian.com/blog/...

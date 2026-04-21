@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI Search Blog Optimiser</title>
+<link rel="icon" href="/static/assets/img/ai-heroes-icon.svg" type="image/svg+xml" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+<link rel="stylesheet" href="/static/assets/ai-heroes.css" />
+<script>
+  // Configure Tailwind to map AI Heroes tokens to `accent` utilities.
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          accent: { DEFAULT: '#00AEEF', dark: '#0090C8', light: '#E6F7FD' },
+          surface: { light: '#FAFAFA', dark: '#0A0A0A' },
+        },
+        fontFamily: {
+          sans: ['"Outfit"', 'Outfit Variable', 'system-ui', 'sans-serif'],
+          heading: ['"Miftah"', 'system-ui', 'sans-serif'],
+          mono: ['"Geist Mono"', 'ui-monospace', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+</head>
+<body class="bg-white text-[#0A0A0A] font-sans antialiased min-h-screen">
+
+<div x-data="dashboard()" x-init="start()" class="min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="border-b border-gray-200 bg-white">
+    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <img src="/static/assets/img/ai-heroes-logo.svg" alt="AI Heroes" class="h-7" onerror="this.style.display='none'" />
+        <span class="hidden sm:inline text-gray-300 text-xl">/</span>
+        <h1 class="font-heading text-lg tracking-tight">Blog Optimiser</h1>
+      </div>
+      <div class="flex items-center gap-3 text-sm text-gray-500">
+        <span x-show="state?.brand?.name" class="font-medium text-gray-700" x-text="state?.brand?.name"></span>
+        <span x-show="state?.brand?.name">·</span>
+        <span x-show="state?.run_id" x-text="'run ' + (state?.run_id || '').slice(0,16)"></span>
+        <span x-show="!state?.run_id" class="italic">no active run</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Banners -->
+  <template x-for="banner in state?.banners || []" :key="banner.at">
+    <div class="border-b px-6 py-3 text-sm"
+         :class="{
+           'bg-accent-light border-accent text-accent-dark': banner.severity === 'info',
+           'bg-yellow-50 border-yellow-200 text-yellow-900': banner.severity === 'warn',
+           'bg-red-50 border-red-200 text-red-800': banner.severity === 'error'
+         }">
+      <div class="max-w-7xl mx-auto flex items-center justify-between gap-4">
+        <span x-text="banner.message"></span>
+        <a x-show="banner.action_url" :href="banner.action_url" target="_blank" rel="noopener"
+           class="underline font-medium whitespace-nowrap" x-text="banner.action_label || 'Learn more'"></a>
+      </div>
+    </div>
+  </template>
+
+  <!-- Welcome / empty state -->
+  <div x-show="!state?.run_id" class="flex-1 flex items-center justify-center">
+    <div class="max-w-xl text-center px-6 py-16">
+      <img src="/static/assets/img/ai-heroes-icon.svg" alt="" class="h-12 mx-auto mb-6 opacity-80" onerror="this.style.display='none'" />
+      <h2 class="font-heading text-3xl mb-3">Welcome to Blog Optimiser</h2>
+      <p class="text-gray-600 mb-8 leading-relaxed">
+        Run <code class="font-mono bg-gray-100 px-2 py-0.5 rounded text-sm">/blog-optimiser &lt;blog-url&gt;</code>
+        in Claude Desktop to start a new optimisation run. Your live progress, recommendations, and
+        optimised articles will appear here.
+      </p>
+      <div class="text-left bg-surface-light rounded-lg p-5 text-sm text-gray-700">
+        <p class="font-medium mb-2">Prerequisites</p>
+        <ul class="space-y-1.5 text-gray-600">
+          <li>• Peec AI MCP connected in Claude Desktop (for live gap data)</li>
+          <li>• Crawl4AI MCP connected in Claude Desktop (for page fetching)</li>
+          <li>• Python 3.8+ on PATH (macOS bundles this; otherwise install from python.org)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pipeline progress -->
+  <section x-show="state?.run_id" class="border-b border-gray-200 bg-surface-light">
+    <div class="max-w-7xl mx-auto px-6 py-4">
+      <div class="flex items-center gap-6 text-sm overflow-x-auto">
+        <template x-for="stage in pipelineStages()" :key="stage.key">
+          <div class="flex items-center gap-2 whitespace-nowrap">
+            <span class="w-5 h-5 rounded-full flex items-center justify-center text-xs"
+                  :class="{
+                    'bg-accent text-white': stage.status === 'completed',
+                    'bg-accent-light text-accent-dark ring-2 ring-accent animate-pulse': stage.status === 'running',
+                    'bg-gray-200 text-gray-500': stage.status === 'pending',
+                    'bg-red-100 text-red-700': stage.status === 'failed'
+                  }">
+              <span x-show="stage.status === 'completed'">✓</span>
+              <span x-show="stage.status === 'running'">◐</span>
+              <span x-show="stage.status === 'pending'">·</span>
+              <span x-show="stage.status === 'failed'">!</span>
+            </span>
+            <span class="capitalize font-medium" x-text="stage.label"></span>
+            <span class="text-gray-500 text-xs" x-text="stage.detail"></span>
+          </div>
+        </template>
+      </div>
+    </div>
+  </section>
+
+  <!-- Articles table -->
+  <main x-show="state?.run_id" class="flex-1">
+    <div class="max-w-7xl mx-auto px-6 py-6">
+
+      <!-- Summary card -->
+      <div x-show="voiceArtefact()" class="mb-6 bg-accent-light border border-accent/30 rounded-lg p-4 text-sm flex items-start gap-4">
+        <span class="text-accent-dark text-xl">◈</span>
+        <div class="flex-1">
+          <p class="font-medium text-accent-dark mb-1">Brand voice extracted</p>
+          <p class="text-gray-700" x-text="voiceArtefact()"></p>
+        </div>
+      </div>
+
+      <!-- Articles table -->
+      <div class="overflow-hidden border border-gray-200 rounded-lg bg-white">
+        <table class="w-full text-sm">
+          <thead class="bg-surface-light border-b border-gray-200">
+            <tr class="text-left text-xs uppercase tracking-wider text-gray-500">
+              <th class="px-4 py-3 w-10">#</th>
+              <th class="px-4 py-3">Article</th>
+              <th class="px-4 py-3 w-32">Crawl</th>
+              <th class="px-4 py-3 w-40">Recommendations</th>
+              <th class="px-4 py-3 w-40">Optimised</th>
+              <th class="px-4 py-3 w-24">Score</th>
+              <th class="px-4 py-3 w-28">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="(article, idx) in state?.articles || []" :key="article.slug">
+              <template x-if="true">
+                <tr class="border-b border-gray-100 hover:bg-surface-light transition-colors">
+                  <td class="px-4 py-3 text-gray-400" x-text="idx + 1"></td>
+                  <td class="px-4 py-3">
+                    <div class="flex items-center gap-3">
+                      <template x-if="article.thumbnail">
+                        <img :src="thumbnailUrl(article)" alt="" class="w-12 h-8 rounded object-cover bg-gray-100" onerror="this.style.display='none'" />
+                      </template>
+                      <div>
+                        <a :href="article.url" target="_blank" rel="noopener"
+                           class="font-medium text-gray-900 hover:text-accent-dark hover:underline"
+                           x-text="article.title || article.slug"></a>
+                        <p class="text-xs text-gray-500 mt-0.5" x-text="shortenUrl(article.url)"></p>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="px-4 py-3" x-html="pill(article.stages?.crawl?.status, article.stages?.crawl?.word_count ? article.stages.crawl.word_count + ' words' : '')"></td>
+                  <td class="px-4 py-3" x-html="pill(article.stages?.recommend?.status, recSummary(article))"></td>
+                  <td class="px-4 py-3" x-html="pill(article.stages?.generate?.status, article.stages?.generate?.status === 'completed' ? 'ready' : '')"></td>
+                  <td class="px-4 py-3">
+                    <span x-show="article.stages?.generate?.audit_score" class="font-mono text-xs"
+                          :class="(article.stages?.generate?.audit_score || 0) >= 32 ? 'text-accent-dark font-semibold' : 'text-yellow-600'"
+                          x-text="(article.stages?.crawl?.audit_score || '?') + ' → ' + (article.stages?.generate?.audit_score || '?')"></span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <button @click="toggleExpanded(article.slug)"
+                            class="px-3 py-1 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
+                      <span x-show="expanded !== article.slug">Details</span>
+                      <span x-show="expanded === article.slug">Close</span>
+                    </button>
+                  </td>
+                </tr>
+              </template>
+
+              <!-- Expanded row -->
+              <template x-if="expanded === article.slug">
+                <tr>
+                  <td colspan="7" class="bg-surface-light p-0">
+                    <div class="p-6 border-t border-gray-200" x-data="articleDetail(article.slug)" x-init="load()">
+                      <div x-show="loading" class="text-sm text-gray-500">Loading recommendations…</div>
+                      <template x-if="!loading && recommendations">
+                        <div>
+                          <div class="flex items-center justify-between mb-4">
+                            <div>
+                              <h3 class="font-heading text-lg" x-text="article.title || article.slug"></h3>
+                              <p class="text-xs text-gray-500 mt-1">
+                                <span x-text="'Audit: ' + (recommendations?.audit_score ?? '?') + '/40 · ' + (recommendations?.article_type || 'unknown type') + ' · ' + (recommendations?.recommendations?.length || 0) + ' recommendations'"></span>
+                              </p>
+                            </div>
+                            <div class="flex gap-2">
+                              <button x-show="article.stages?.generate?.status === 'completed'"
+                                      @click="openPreview()"
+                                      class="px-3 py-1.5 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark">
+                                Preview optimised
+                              </button>
+                              <button x-show="article.stages?.generate?.status === 'completed'"
+                                      @click="approve()"
+                                      class="px-3 py-1.5 rounded text-xs font-medium bg-accent text-white hover:bg-accent-dark">
+                                Approve & export
+                              </button>
+                              <button @click="rerun()"
+                                      class="px-3 py-1.5 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark">
+                                Re-run
+                              </button>
+                            </div>
+                          </div>
+
+                          <div class="space-y-3">
+                            <template x-for="rec in recommendations?.recommendations || []" :key="rec.id">
+                              <div class="bg-white border rounded-lg p-4"
+                                   :class="decisions?.recs?.[rec.id] === 'accept' ? 'border-accent' : decisions?.recs?.[rec.id] === 'reject' ? 'border-gray-200 opacity-60' : 'border-gray-200'">
+                                <div class="flex items-start justify-between gap-4">
+                                  <div class="flex-1">
+                                    <div class="flex items-center gap-2 mb-1 text-xs">
+                                      <span class="font-mono text-gray-400" x-text="rec.id"></span>
+                                      <span class="px-2 py-0.5 rounded-full"
+                                            :class="{
+                                              'bg-red-100 text-red-700': rec.severity === 'critical',
+                                              'bg-orange-100 text-orange-700': rec.severity === 'high',
+                                              'bg-yellow-50 text-yellow-700': rec.severity === 'medium',
+                                              'bg-gray-100 text-gray-600': rec.severity === 'low'
+                                            }"
+                                            x-text="rec.severity"></span>
+                                      <span class="text-gray-500" x-text="'effort: ' + rec.effort"></span>
+                                    </div>
+                                    <p class="text-sm text-gray-900" x-text="rec.fix"></p>
+                                  </div>
+                                  <div class="flex gap-1 shrink-0">
+                                    <button @click="setDecision(rec.id, 'accept')"
+                                            class="w-8 h-8 rounded border text-sm"
+                                            :class="decisions?.recs?.[rec.id] === 'accept' ? 'border-accent bg-accent text-white' : 'border-gray-200 hover:border-accent'">✓</button>
+                                    <button @click="setDecision(rec.id, 'reject')"
+                                            class="w-8 h-8 rounded border text-sm"
+                                            :class="decisions?.recs?.[rec.id] === 'reject' ? 'border-gray-400 bg-gray-100' : 'border-gray-200 hover:border-gray-400'">✕</button>
+                                  </div>
+                                </div>
+
+                                <!-- Evidence trail -->
+                                <details class="mt-3 text-xs">
+                                  <summary class="text-gray-500 cursor-pointer hover:text-accent-dark">Evidence trail</summary>
+                                  <div class="mt-2 space-y-2 pl-2 border-l-2 border-accent-light">
+                                    <div x-show="rec.evidence?.peec_gap">
+                                      <span class="font-medium text-accent-dark">Peec gap:</span>
+                                      <span class="text-gray-700" x-text="'prompt &quot;' + (rec.evidence?.peec_gap?.prompt || '?') + '&quot; — losing on ' + (rec.evidence?.peec_gap?.engines_lost || []).join(', ')"></span>
+                                      <div class="mt-1 text-gray-500" x-show="rec.evidence?.peec_gap?.cited_competitors?.length">
+                                        <span>Cited instead: </span>
+                                        <template x-for="url in rec.evidence?.peec_gap?.cited_competitors || []">
+                                          <a :href="url" target="_blank" rel="noopener" class="underline mr-2" x-text="shortenUrl(url)"></a>
+                                        </template>
+                                      </div>
+                                    </div>
+                                    <div x-show="rec.evidence?.schmidt_rule">
+                                      <span class="font-medium text-accent-dark">Schmidt rule:</span>
+                                      <span class="text-gray-700 font-mono" x-text="rec.evidence?.schmidt_rule"></span>
+                                    </div>
+                                    <div x-show="rec.evidence?.competitor_example">
+                                      <span class="font-medium text-accent-dark">Competitor example:</span>
+                                      <a :href="rec.evidence?.competitor_example?.url" target="_blank" rel="noopener" class="underline" x-text="shortenUrl(rec.evidence?.competitor_example?.url || '')"></a>
+                                      <blockquote class="mt-1 text-gray-600 italic border-l-2 border-gray-200 pl-2" x-text="rec.evidence?.competitor_example?.excerpt"></blockquote>
+                                    </div>
+                                    <div x-show="rec.evidence?.step1_field">
+                                      <span class="font-medium text-accent-dark">Detected in:</span>
+                                      <code class="text-gray-700 text-[11px]" x-text="rec.evidence?.step1_field"></code>
+                                    </div>
+                                    <div x-show="rec.expected_lift_per_engine" class="mt-1">
+                                      <span class="font-medium text-accent-dark">Expected lift:</span>
+                                      <div class="flex gap-3 mt-1">
+                                        <template x-for="(lift, engine) in rec.expected_lift_per_engine || {}" :key="engine">
+                                          <span class="text-gray-700"><span class="text-gray-500" x-text="engine + ':'"></span> <span x-text="lift"></span></span>
+                                        </template>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </details>
+                              </div>
+                            </template>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <footer class="border-t border-gray-200 py-4 text-center text-xs text-gray-400">
+    <span>Powered by</span>
+    <a href="https://aiheroes.site" target="_blank" rel="noopener" class="underline hover:text-accent-dark">AI Heroes</a>
+    <span>·</span>
+    <a href="https://peec.ai" target="_blank" rel="noopener" class="underline hover:text-accent-dark">Peec AI MCP</a>
+    <span>·</span>
+    <span x-text="'v' + version"></span>
+  </footer>
+</div>
+
+<script>
+function dashboard() {
+  return {
+    version: '0.1.0',
+    state: null,
+    decisions: null,
+    pollTimer: null,
+    expanded: null,
+    runId: null,
+
+    start() {
+      // Resolve run id from path: /runs/{run_id}/
+      const m = window.location.pathname.match(/\/runs\/([^\/]+)\/?/);
+      this.runId = m ? m[1] : null;
+      this.tick();
+      this.pollTimer = setInterval(() => this.tick(), 1500);
+    },
+
+    async tick() {
+      try {
+        if (!this.runId) {
+          const runs = await fetch('/api/runs').then(r => r.json());
+          if (runs.length) {
+            window.location.href = `/runs/${runs[0].run_id}/`;
+            return;
+          }
+          this.state = null;
+          return;
+        }
+        const [state, decisions] = await Promise.all([
+          fetch(`/api/runs/${this.runId}/state`).then(r => r.json()),
+          fetch(`/api/runs/${this.runId}/decisions`).then(r => r.json()).catch(() => ({articles: {}})),
+        ]);
+        this.state = state;
+        this.decisions = decisions;
+      } catch (e) {
+        console.warn('poll failed', e);
+      }
+    },
+
+    pipelineStages() {
+      const p = this.state?.pipeline || {};
+      return [
+        {key: 'crawl', label: 'Crawl', status: p.crawl?.status || 'pending',
+         detail: p.crawl?.status === 'completed' ? `${p.crawl.count || 0} articles` : (p.crawl?.detail || '')},
+        {key: 'voice', label: 'Voice', status: p.voice?.status || 'pending',
+         detail: p.voice?.detail || ''},
+        {key: 'recommend', label: 'Recommend', status: p.recommend?.status || 'pending',
+         detail: p.recommend?.completed_articles ? `${p.recommend.completed_articles}/${p.recommend.total || 0}` : ''},
+        {key: 'generate', label: 'Generate', status: p.generate?.status || 'pending',
+         detail: p.generate?.completed_articles ? `${p.generate.completed_articles}/${p.generate.total || 0}` : ''},
+      ];
+    },
+
+    voiceArtefact() {
+      const v = this.state?.pipeline?.voice;
+      if (v?.status === 'completed' && v?.summary) return v.summary;
+      return null;
+    },
+
+    toggleExpanded(slug) { this.expanded = this.expanded === slug ? null : slug; },
+
+    pill(status, detail) {
+      const base = 'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs whitespace-nowrap';
+      if (status === 'completed') return `<span class="${base} bg-accent-light text-accent-dark"><span class="w-1.5 h-1.5 bg-accent rounded-full"></span>${detail || 'done'}</span>`;
+      if (status === 'running')   return `<span class="${base} bg-yellow-50 text-yellow-700"><span class="w-1.5 h-1.5 bg-yellow-500 rounded-full animate-pulse"></span>running</span>`;
+      if (status === 'failed')    return `<span class="${base} bg-red-50 text-red-700"><span class="w-1.5 h-1.5 bg-red-500 rounded-full"></span>failed</span>`;
+      if (status === 'partial')   return `<span class="${base} bg-orange-50 text-orange-700"><span class="w-1.5 h-1.5 bg-orange-500 rounded-full"></span>partial</span>`;
+      return `<span class="${base} bg-gray-100 text-gray-500">pending</span>`;
+    },
+
+    recSummary(article) {
+      const s = article.stages?.recommend;
+      if (!s) return '';
+      if (s.status !== 'completed') return '';
+      const parts = [];
+      if (s.count) parts.push(`${s.count} recs`);
+      if (s.critical) parts.push(`${s.critical} critical`);
+      return parts.join(' · ');
+    },
+
+    thumbnailUrl(article) {
+      if (!article.thumbnail) return '';
+      if (article.thumbnail.startsWith('http')) return article.thumbnail;
+      return `/api/runs/${this.runId}/${article.thumbnail.replace(/^runs\/[^\/]+\//, '')}`;
+    },
+
+    shortenUrl(url) {
+      if (!url) return '';
+      try {
+        const u = new URL(url);
+        return u.hostname + u.pathname.replace(/\/$/, '');
+      } catch (_) {
+        return url.length > 40 ? url.slice(0, 40) + '…' : url;
+      }
+    },
+  };
+}
+
+function articleDetail(slug) {
+  return {
+    slug,
+    loading: true,
+    recommendations: null,
+    decisions: null,
+
+    async load() {
+      this.loading = true;
+      try {
+        const runId = window.location.pathname.match(/\/runs\/([^\/]+)\/?/)?.[1];
+        const recs = await fetch(`/api/runs/${runId}/recommendations/${this.slug}`).then(r => r.ok ? r.json() : null);
+        const all = await fetch(`/api/runs/${runId}/decisions`).then(r => r.ok ? r.json() : ({articles: {}}));
+        this.recommendations = recs;
+        this.decisions = all.articles?.[this.slug] || {recs: {}};
+      } catch (e) {
+        console.warn('article detail load failed', e);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async setDecision(recId, action) {
+      const runId = window.location.pathname.match(/\/runs\/([^\/]+)\/?/)?.[1];
+      await fetch(`/api/runs/${runId}/actions`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action, slug: this.slug, rec_id: recId}),
+      });
+      this.decisions.recs[recId] = action;
+    },
+
+    async approve() {
+      const runId = window.location.pathname.match(/\/runs\/([^\/]+)\/?/)?.[1];
+      await fetch(`/api/runs/${runId}/actions`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: 'approve', slug: this.slug}),
+      });
+      alert('Approved. The optimised article and handoff doc are in runs/' + runId + '/optimised/' + this.slug + '/');
+    },
+
+    async rerun() {
+      const runId = window.location.pathname.match(/\/runs\/([^\/]+)\/?/)?.[1];
+      await fetch(`/api/runs/${runId}/actions`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: 'rerun_article', slug: this.slug}),
+      });
+      alert('Re-run requested. Run /blog-optimiser --resume ' + runId + ' in Claude Desktop to process queued re-runs.');
+    },
+
+    openPreview() {
+      const runId = window.location.pathname.match(/\/runs\/([^\/]+)\/?/)?.[1];
+      window.open(`/api/runs/${runId}/optimised/${this.slug}.html`, '_blank');
+    },
+
+    shortenUrl(url) {
+      if (!url) return '';
+      try {
+        const u = new URL(url);
+        return u.hostname + u.pathname.replace(/\/$/, '');
+      } catch (_) {
+        return url.length > 40 ? url.slice(0, 40) + '…' : url;
+      }
+    },
+  };
+}
+</script>
+
+</body>
+</html>

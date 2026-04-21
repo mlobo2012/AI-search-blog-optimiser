@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI Search Blog Optimiser</title>
+<link rel="icon" href="/static/assets/img/ai-heroes-icon.svg" type="image/svg+xml" />
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="/static/assets/ai-heroes.css" />
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        accent: { DEFAULT: '#00AEEF', dark: '#0090C8', light: '#E6F7FD' },
+        surface: { light: '#FAFAFA', dark: '#0A0A0A' },
+      },
+      fontFamily: {
+        sans: ['"Outfit"', 'Outfit Variable', 'system-ui', 'sans-serif'],
+        heading: ['"Miftah"', 'system-ui', 'sans-serif'],
+      },
+    },
+  },
+};
+</script>
+</head>
+<body class="bg-white text-[#0A0A0A] font-sans antialiased min-h-screen flex flex-col">
+
+<header class="border-b border-gray-200 bg-white">
+  <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <img src="/static/assets/img/ai-heroes-logo.svg" alt="AI Heroes" class="h-7" onerror="this.style.display='none'" />
+      <span class="hidden sm:inline text-gray-300 text-xl">/</span>
+      <h1 class="font-heading text-lg tracking-tight">Blog Optimiser</h1>
+    </div>
+    <div class="text-sm text-gray-500 italic">no active run</div>
+  </div>
+</header>
+
+<main class="flex-1 flex items-center justify-center">
+  <div class="max-w-xl text-center px-6 py-16">
+    <img src="/static/assets/img/ai-heroes-icon.svg" alt="" class="h-12 mx-auto mb-6 opacity-80" onerror="this.style.display='none'" />
+    <h2 class="font-heading text-3xl mb-3">Welcome to Blog Optimiser</h2>
+    <p class="text-gray-600 mb-8 leading-relaxed">
+      In Claude Desktop, run:
+    </p>
+    <pre class="bg-surface-light rounded-lg p-4 text-sm text-left font-mono mb-8 overflow-x-auto"><code>/blog-optimiser https://your-blog.com/blog</code></pre>
+    <p class="text-gray-600 mb-8 leading-relaxed text-sm">
+      Your live progress, recommendations, and optimised articles will appear here automatically.
+    </p>
+    <div class="text-left bg-surface-light rounded-lg p-5 text-sm text-gray-700">
+      <p class="font-medium mb-2">Prerequisites (connected in Claude Desktop's MCP settings)</p>
+      <ul class="space-y-1.5 text-gray-600">
+        <li>• <strong>Peec AI MCP</strong> — for live gap data (<a href="https://peec.ai" class="underline hover:text-accent-dark" target="_blank" rel="noopener">peec.ai</a>)</li>
+        <li>• <strong>Crawl4AI MCP</strong> — for page fetching and extraction</li>
+        <li>• <strong>Python 3.8+</strong> — macOS bundles this; otherwise install from <a href="https://python.org" class="underline hover:text-accent-dark" target="_blank" rel="noopener">python.org</a></li>
+      </ul>
+    </div>
+    <p class="mt-8 text-xs text-gray-400">
+      The plugin runs in "generic mode" if Peec isn't connected — recommendations are still produced using GEO best-practice rules and any competitor URLs you supply.
+    </p>
+  </div>
+</main>
+
+<footer class="border-t border-gray-200 py-4 text-center text-xs text-gray-400">
+  Powered by
+  <a href="https://aiheroes.site" target="_blank" rel="noopener" class="underline hover:text-accent-dark">AI Heroes</a>
+  ·
+  <a href="https://peec.ai" target="_blank" rel="noopener" class="underline hover:text-accent-dark">Peec AI</a>
+</footer>
+
+<script>
+// Poll for a newly-registered run and jump into the dashboard when one appears.
+setInterval(async () => {
+  try {
+    const r = await fetch('/api/runs').then(r => r.json());
+    if (r.length) window.location.href = `/runs/${r[0].run_id}/`;
+  } catch (_) {}
+}, 2000);
+</script>
+</body>
+</html>
