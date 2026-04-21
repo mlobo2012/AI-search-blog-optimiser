@@ -2,7 +2,18 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
-## [0.1.0] — Unreleased
+## [0.1.1] — 2026-04-21
+
+### Fixed
+- **Critical**: Cowork mounts the plugin install directory as read-only for sub-agents, so writes to `${CLAUDE_PLUGIN_ROOT}/runs/` silently no-op. All writable state (runs, brand-voice artefacts, decisions) now lives in `~/.ai-search-blog-optimiser/` (override via `--data-dir` or `AI_SEARCH_BLOG_OPTIMISER_DATA` env var). Dashboard static assets still served from the plugin root (read access is fine).
+- Added a new MCP tool `get_paths` that returns absolute `data_dir`, `runs_dir`, `brands_dir`, and per-run sub-directories. Orchestrator calls this at stage start and passes absolute paths to every sub-agent.
+- Server performs a writability probe on startup and exits with a clear error if the data dir isn't writable.
+
+### Changed
+- Default data root: `~/.ai-search-blog-optimiser/` (previously under plugin root).
+- All agent prompts updated to reference `{articles_dir}`, `{recommendations_dir}`, `{brands_dir}`, `{run_dir}` etc. as placeholders filled in from orchestrator-passed absolute paths, not hardcoded relative paths.
+
+## [0.1.0] — Initial draft
 
 First public release. Peec AI MCP Challenge submission.
 

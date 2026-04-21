@@ -32,10 +32,19 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # Paths + state
 # ---------------------------------------------------------------------------
+#
+# Important: in Claude Cowork, ${CLAUDE_PLUGIN_ROOT} is mounted READ-ONLY for
+# sub-agents. Static assets (HTML, CSS, fonts, logos) can be served from there,
+# but all WRITABLE state (runs, brand voice artefacts, decisions) must live in
+# a user-writable location. Default: ~/.ai-search-blog-optimiser/. Override with
+# --data-dir or the AI_SEARCH_BLOG_OPTIMISER_DATA env var.
 
 PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", Path(__file__).resolve().parent.parent))
-RUNS_DIR = PLUGIN_ROOT / "runs"
 DASHBOARD_DIR = PLUGIN_ROOT / "dashboard"
+
+DATA_DIR = Path(os.environ.get("AI_SEARCH_BLOG_OPTIMISER_DATA", Path.home() / ".ai-search-blog-optimiser"))
+RUNS_DIR = DATA_DIR / "runs"
+BRANDS_DIR = DATA_DIR / "brands"
 
 STATE_LOCK = threading.RLock()
 HTTP_SERVER: socketserver.TCPServer | None = None
@@ -375,7 +384,7 @@ MCP_TOOLS = [
     },
     {
         "name": "register_run",
-        "description": "Initialise a new run directory under runs/{run_id}/. Creates state.json, articles/, recommendations/, optimised/, media/ subdirs. Returns the run_id and absolute path.",
+        "description": "Initialise a new run directory at {data_dir}/runs/{run_id}/. Creates state.json and all sub-directories (articles/, recommendations/, optimised/, media/, raw/, gaps/, competitors/, peec-cache/). Returns run_id, absolute run path, data_dir, and brands_dir — USE THESE absolute paths in all subsequent sub-agent file operations. The plugin install dir is read-only; all writes must go under data_dir (defaults to ~/.ai-search-blog-optimiser/).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -385,6 +394,14 @@ MCP_TOOLS = [
                 "role": {"type": "string", "enum": ["own", "competitor", "unknown"]},
             },
             "required": ["blog_url"],
+        },
+    },
+    {
+        "name": "get_paths",
+        "description": "Return the absolute data_dir, brands_dir, and — if run_id is provided — the run_dir. Use this at the start of any sub-agent that reads/writes files to avoid hard-coding paths. Run state files live under {data_dir}/runs/{run_id}/, brand-voice artefacts under {data_dir}/brands/{peec_project_id}/.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
         },
     },
     {
@@ -482,8 +499,10 @@ def _tool_register_run(args: dict) -> dict:
     run_id = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    for sub in ("articles", "recommendations", "optimised", "media", "raw"):
+    for sub in ("articles", "recommendations", "optimised", "media", "raw", "gaps", "competitors", "peec-cache"):
         (run_dir / sub).mkdir(parents=True, exist_ok=True)
+    # Ensure the brands dir is ready for the voice-extractor.
+    BRANDS_DIR.mkdir(parents=True, exist_ok=True)
     initial_state = {
         "run_id": run_id,
         "blog_url": args.get("blog_url"),
@@ -491,6 +510,11 @@ def _tool_register_run(args: dict) -> dict:
             "name": args.get("brand_name"),
             "peec_project_id": args.get("peec_project_id"),
             "role": args.get("role", "unknown"),
+        },
+        "paths": {
+            "data_dir": str(DATA_DIR),
+            "run_dir": str(run_dir),
+            "brands_dir": str(BRANDS_DIR),
         },
         "pipeline": {
             "crawl": {"status": "pending"},
@@ -504,7 +528,7 @@ def _tool_register_run(args: dict) -> dict:
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     _write_json(run_dir / "state.json", initial_state)
-    return {"run_id": run_id, "path": str(run_dir)}
+    return {"run_id": run_id, "path": str(run_dir), "data_dir": str(DATA_DIR), "brands_dir": str(BRANDS_DIR)}
 
 
 def _tool_update_state(args: dict) -> dict:
@@ -554,6 +578,34 @@ def _tool_show_banner(args: dict) -> dict:
     return {"ok": True}
 
 
+def _tool_get_paths(args: dict) -> dict:
+    run_id = args.get("run_id")
+    paths = {
+        "data_dir": str(DATA_DIR),
+        "runs_dir": str(RUNS_DIR),
+        "brands_dir": str(BRANDS_DIR),
+        "dashboard_dir": str(DASHBOARD_DIR),
+        "plugin_root": str(PLUGIN_ROOT),
+    }
+    if run_id:
+        run_dir = RUNS_DIR / run_id
+        if run_dir.exists():
+            paths["run_dir"] = str(run_dir)
+            paths["articles_dir"] = str(run_dir / "articles")
+            paths["recommendations_dir"] = str(run_dir / "recommendations")
+            paths["optimised_dir"] = str(run_dir / "optimised")
+            paths["media_dir"] = str(run_dir / "media")
+            paths["gaps_dir"] = str(run_dir / "gaps")
+            paths["competitors_dir"] = str(run_dir / "competitors")
+            paths["peec_cache_dir"] = str(run_dir / "peec-cache")
+            paths["state_json"] = str(run_dir / "state.json")
+            paths["decisions_json"] = str(run_dir / "decisions.json")
+        else:
+            paths["run_dir"] = None
+            paths["error"] = f"Run {run_id} does not exist"
+    return paths
+
+
 TOOL_DISPATCH = {
     "open_dashboard": _tool_open_dashboard,
     "get_dashboard_url": _tool_get_dashboard_url,
@@ -562,6 +614,7 @@ TOOL_DISPATCH = {
     "list_runs": _tool_list_runs,
     "get_decisions": _tool_get_decisions,
     "show_banner": _tool_show_banner,
+    "get_paths": _tool_get_paths,
 }
 
 
@@ -649,11 +702,14 @@ def _send(msg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    global PLUGIN_ROOT, RUNS_DIR, DASHBOARD_DIR, HTTP_SERVER, HTTP_PORT
+    global PLUGIN_ROOT, RUNS_DIR, BRANDS_DIR, DATA_DIR, DASHBOARD_DIR, HTTP_SERVER, HTTP_PORT
 
     parser = argparse.ArgumentParser(description="AI Search Blog Optimiser dashboard server")
     parser.add_argument("--plugin-root", type=str, default=str(PLUGIN_ROOT),
-                        help="Absolute path to the plugin root (defaults to CLAUDE_PLUGIN_ROOT env).")
+                        help="Absolute path to the plugin root (defaults to CLAUDE_PLUGIN_ROOT env). Read-only in Cowork sandbox — assets only.")
+    parser.add_argument("--data-dir", type=str,
+                        default=os.environ.get("AI_SEARCH_BLOG_OPTIMISER_DATA", str(Path.home() / ".ai-search-blog-optimiser")),
+                        help="Writable data directory for runs/ and brands/ (default: ~/.ai-search-blog-optimiser/).")
     parser.add_argument("--http-only", action="store_true",
                         help="Skip MCP, run HTTP only (for local dev and QA).")
     parser.add_argument("--port", type=int, default=0,
@@ -661,9 +717,27 @@ def main() -> None:
     args = parser.parse_args()
 
     PLUGIN_ROOT = Path(args.plugin_root).resolve()
-    RUNS_DIR = PLUGIN_ROOT / "runs"
     DASHBOARD_DIR = PLUGIN_ROOT / "dashboard"
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR = Path(args.data_dir).expanduser().resolve()
+    RUNS_DIR = DATA_DIR / "runs"
+    BRANDS_DIR = DATA_DIR / "brands"
+
+    # Verify writability up-front — this is the root cause of v0.1.0 failures.
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        BRANDS_DIR.mkdir(parents=True, exist_ok=True)
+        # Write a probe file to confirm the dir is actually writable.
+        probe = DATA_DIR / ".writable-probe"
+        probe.write_text("ok")
+        probe.unlink()
+    except OSError as e:
+        _log(f"FATAL: data dir {DATA_DIR} is not writable: {e}")
+        _log("Set --data-dir or AI_SEARCH_BLOG_OPTIMISER_DATA to a writable path.")
+        sys.exit(2)
+
+    _log(f"plugin_root (read-only assets): {PLUGIN_ROOT}")
+    _log(f"data_dir (writable state):      {DATA_DIR}")
 
     if args.http_only:
         # Dev/QA mode: serve the dashboard on a fixed port without MCP stdio.

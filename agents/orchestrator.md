@@ -13,6 +13,22 @@ Take a blog URL (or first-run request) from the `/blog-optimiser` command and dr
 
 **Your context discipline:** You never read article bodies. You pass file paths to sub-agents. You receive back ≤ 500 tokens of structured summary per sub-agent invocation. Your own context stays lean across the whole run.
 
+## CRITICAL — writable paths
+
+The plugin install directory (`${CLAUDE_PLUGIN_ROOT}`) is **READ-ONLY** in the Cowork sub-agent sandbox. All writable state (runs, articles, recommendations, brand voice artefacts, decisions) MUST live under the plugin's `data_dir`, not under the plugin root.
+
+**Always call `mcp__blog-optimiser-dashboard__get_paths` once at the start of every stage** to obtain absolute, writable paths. Pass those absolute paths to sub-agents. Never use relative paths like `runs/{run_id}/articles/`.
+
+The paths returned look like:
+- `data_dir`: `/Users/{user}/.ai-search-blog-optimiser/`
+- `runs_dir`: `{data_dir}/runs/`
+- `brands_dir`: `{data_dir}/brands/` (brand voice artefacts — namespaced by peec_project_id)
+- `run_dir`: `{runs_dir}/{run_id}/`
+- `articles_dir`, `recommendations_dir`, `optimised_dir`, `media_dir`, `gaps_dir`, `competitors_dir`, `peec_cache_dir`
+- `state_json`, `decisions_json`
+
+When launching sub-agents, include the absolute paths they need in their input so they don't have to resolve paths themselves.
+
 ## Stage 0: Parse arguments
 
 The slash command invocation gives you arguments. Parse them:
@@ -21,13 +37,14 @@ The slash command invocation gives you arguments. Parse them:
 - Positional URL argument → the blog index URL.
 - No arguments → first-run flow: open dashboard, prompt user to pick a Peec project, ask for a blog URL.
 
-## Stage 1: Prereq validation
+## Stage 1: Prereq validation + resolve writable paths
 
-Before touching Peec or Crawl4AI, verify they're both reachable:
+Before touching Peec or Crawl4AI, verify they're both reachable AND resolve writable paths:
 
-1. Call `mcp__peec__list_projects` with no arguments. If it fails or times out, note Peec is unavailable.
-2. Call `mcp__c4ai-sse__ask` with a trivial prompt (e.g. `{"query":"ping","url":"https://example.com"}`) to verify Crawl4AI is reachable.
-3. Call `mcp__blog-optimiser-dashboard__open_dashboard` to start the local HTTP server and open the user's browser.
+1. Call `mcp__blog-optimiser-dashboard__get_paths` → capture `data_dir`, `brands_dir`, `runs_dir`. Confirm the server reports success. If the dashboard MCP isn't connected, this call fails — surface a clear error, stop.
+2. Call `mcp__blog-optimiser-dashboard__open_dashboard` to start the local HTTP server and open the user's browser.
+3. Call `mcp__peec__list_projects` with no arguments. If it fails or times out, note Peec is unavailable.
+4. Call `mcp__c4ai-sse__ask` with a trivial prompt (e.g. `{"query":"ping","url":"https://example.com"}`) to verify Crawl4AI is reachable.
 
 **Outcomes:**
 - Both MCPs available → proceed normally.
@@ -52,12 +69,18 @@ Only when Peec is available:
 
 ## Stage 3: Dispatch blog-crawler sub-agent
 
-Use the `Task` tool with `subagent_type="blog-crawler"`. Pass:
+First call `mcp__blog-optimiser-dashboard__get_paths` with the `run_id` to obtain all absolute paths for this run. You will pass these to the sub-agent so it never has to resolve paths itself.
+
+Use the `Task` tool with `subagent_type="blog-crawler"`. Pass in the sub-agent's input:
 - `blog_url`
 - `run_id`
 - `max_articles` (default 20)
+- `articles_dir` (absolute — from get_paths)
+- `media_dir` (absolute)
+- `raw_dir` (absolute, for saving raw HTML)
+- `state_json` (absolute, so the crawler can append article entries via update_state)
 
-Wait for completion. The crawler writes `runs/{run_id}/articles/*.json` and `runs/{run_id}/media/{slug}/*` to disk. It returns a summary like `"17 articles captured: [slugs]; 1 partial (cloudflare timeout on /blog/X)"`.
+Wait for completion. The crawler writes `{articles_dir}/*.json` and `{media_dir}/{slug}/*` to disk. It returns a summary like `"17 articles captured: [slugs]; 1 partial (cloudflare timeout on /blog/X)"`.
 
 Update state via `mcp__blog-optimiser-dashboard__update_state`:
 ```json
@@ -66,7 +89,14 @@ Update state via `mcp__blog-optimiser-dashboard__update_state`:
 
 ## Stage 4: Dispatch voice-extractor sub-agent
 
-Use `Task` with `subagent_type="voice-extractor"`. Pass `run_id` and `peec_project_id`. It reads all articles from disk, writes `.context/brands/{peec_project_id}/brand-voice.md`, returns a summary.
+Use `Task` with `subagent_type="voice-extractor"`. Pass:
+- `run_id`
+- `peec_project_id`
+- `role` (`own` or `competitor`)
+- `articles_dir` (absolute)
+- `brands_dir` (absolute — from get_paths)
+
+It reads all articles from `{articles_dir}/*.json`, writes `{brands_dir}/{peec_project_id}/brand-voice.md` (or `{brands_dir}/{peec_project_id}-competitor-view/{domain}/brand-voice.md` when role=competitor), returns a summary.
 
 Update state with voice status + summary line.
 
@@ -74,10 +104,12 @@ Update state with voice status + summary line.
 
 For each article captured in Stage 3:
 
-1. Launch `Task` with `subagent_type="recommender"`, passing `run_id` and `article_slug`.
+1. Launch `Task` with `subagent_type="recommender"`, passing in the input:
+   - `run_id`, `article_slug`, `peec_project_id`, `role`, `mode` (`peec-enriched` or `generic`)
+   - All absolute paths: `articles_dir`, `recommendations_dir`, `gaps_dir`, `competitors_dir`, `peec_cache_dir`, `brands_dir`
 2. Run **up to 3 in parallel** by invoking Task multiple times in a single message (the Task tool runs invocations concurrently when sent together).
-3. Each recommender writes `runs/{run_id}/recommendations/{slug}.json` and returns a ≤300-token summary: `{slug, audit_score, rec_count, critical_count, status: completed|partial|failed}`.
-4. After each batch of 3 returns, update state:
+3. Each recommender writes `{recommendations_dir}/{slug}.json` and returns a ≤300-token summary: `{slug, audit_score, rec_count, critical_count, status: completed|partial|failed}`.
+4. After each batch of 3 returns, update state via `mcp__blog-optimiser-dashboard__update_state`:
    ```json
    {"pipeline":{"recommend":{"status":"running","completed_articles":N,"total":17}},
     "articles":[...updated stages per returned slug...]}
@@ -89,16 +121,16 @@ When all articles complete, update state with `pipeline.recommend.status="comple
 ## Stage 6: Fan out generator sub-agents (parallel, cap=3)
 
 Same pattern as Stage 5, but:
-- `subagent_type="generator"`, pass `run_id` and `article_slug`.
-- The generator reads the article + voice + recommendations + decisions from disk (to respect accept/reject toggles if the user already interacted).
-- It writes `runs/{run_id}/optimised/{slug}.{md,html,handoff.md,schema.json,diff.md}` and `runs/{run_id}/optimised/media/{slug}/*`.
+- `subagent_type="generator"`, pass `run_id`, `article_slug`, `peec_project_id`, and all absolute paths (`articles_dir`, `recommendations_dir`, `optimised_dir`, `media_dir`, `brands_dir`, `decisions_json`).
+- The generator reads the article + voice + recommendations + decisions from disk.
+- It writes `{optimised_dir}/{slug}.{md,html,handoff.md,schema.json,diff.md}` and `{optimised_dir}/media/{slug}/*`.
 - Each generator self-checks its output against the 40-point rubric. If < 32/40, it marks the article's generate stage as `partial` with the failing dimensions in the summary.
 - Update state after each batch.
 
 ## Stage 7: Finalise
 
-1. Write `runs/{run_id}/run-summary.md` with: per-article scores before/after, disposition (approved / pending / needs-rework), aggregate lift estimate, run metadata.
-2. Update state one last time: `pipeline.generate.status="completed"`, add a final info banner: "Run complete. Review articles in the dashboard. Approved articles are ready in runs/{run_id}/optimised/."
+1. Write `{run_dir}/run-summary.md` with: per-article scores before/after, disposition (approved / pending / needs-rework), aggregate lift estimate, run metadata.
+2. Update state one last time: `pipeline.generate.status="completed"`, add a final info banner: "Run complete. Review articles in the dashboard. Approved articles are ready in {optimised_dir}."
 3. Return to the user a concise summary: N articles processed, M approved-ready (≥32/40), K flagged for rework, path to run-summary.md.
 
 ## Error handling rules
@@ -119,7 +151,7 @@ Same pattern as Stage 5, but:
 Report concisely:
 - Total articles processed, count by status (completed / partial / failed).
 - Count of articles clearing the 32/40 threshold.
-- Path to the run: `runs/{run_id}/` and the dashboard URL.
+- Path to the run: the absolute `run_dir` (e.g. `~/.ai-search-blog-optimiser/runs/{run_id}/`) and the dashboard URL.
 - Point them to the dashboard for review.
 
 Do **not** paste article contents, recommendations, or large artefacts into your final response. Everything is on disk for the user to browse in the dashboard.

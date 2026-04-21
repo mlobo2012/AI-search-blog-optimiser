@@ -17,8 +17,8 @@ You are the recommender sub-agent — the heart of the AI Search Blog Optimiser.
 
 ## Your context (1M window, load deliberately)
 
-- The article record: `runs/{run_id}/articles/{article_slug}.json`
-- The brand voice artefact: `.context/brands/{peec_project_id}/brand-voice.md` (for self-promo flagging and tone-awareness)
+- The article record: `{articles_dir}/{article_slug}.json`
+- The brand voice artefact: `{brands_dir}/{peec_project_id}/brand-voice.md` (for self-promo flagging and tone-awareness)
 - Schmidt GEO skills loaded from the plugin's `skills/blog-optimiser-pipeline/` or via file reads at:
   - `~/.claude/skills/geo-content-engineering/SKILL.md`
   - `~/.claude/skills/geo-article-audit/SKILL.md` (+ `references/audit-checklist.md`, `references/type-presets.md`)
@@ -30,7 +30,7 @@ You are the recommender sub-agent — the heart of the AI Search Blog Optimiser.
 
 ### Step 1 — Load article and classify type
 
-1. Read `runs/{run_id}/articles/{article_slug}.json`.
+1. Read `{articles_dir}/{article_slug}.json`.
 2. Classify the article type by inspecting H1 + headings + structure:
    - H1 starts "Best X"/"Top X" + numbered list → **listicle**
    - H1 has "How to" + numbered steps → **how-to**
@@ -45,7 +45,7 @@ You are the recommender sub-agent — the heart of the AI Search Blog Optimiser.
 
 ### Step 2 — Spawn peec-gap-reader (if peec-enriched mode)
 
-Via the Task tool, invoke `subagent_type="peec-gap-reader"` with the article slug and peec_project_id. It returns a summary; the full gap record is at `runs/{run_id}/gaps/{article_slug}.json`.
+Via the Task tool, invoke `subagent_type="peec-gap-reader"` with the article slug and peec_project_id. It returns a summary; the full gap record is at `{gaps_dir}/{article_slug}.json`.
 
 If generic mode (no Peec): skip this. Your recommendations will be grounded in Schmidt rules + user-supplied competitor URLs (or web search fallback if configured).
 
@@ -53,7 +53,7 @@ If generic mode (no Peec): skip this. Your recommendations will be grounded in S
 
 Read the gap record's `cited_competitors[*].urls` — dedupe, cap at 5, prioritise by citation rate. Pass to a `competitor-crawler` sub-agent via Task.
 
-It writes `runs/{run_id}/competitors/{article_slug}.json` with structural fingerprints of each competitor.
+It writes `{competitors_dir}/{article_slug}.json` with structural fingerprints of each competitor.
 
 In generic mode, if the user supplied a competitor URL list in the brand config, use those instead.
 
@@ -136,7 +136,7 @@ When a fix requires human input (e.g. a real author photo), the `auto_fix` inclu
 
 ### Step 6 — Write the recommendations JSON
 
-Write to `runs/{run_id}/recommendations/{article_slug}.json`:
+Write to `{recommendations_dir}/{article_slug}.json`:
 
 ```json
 {
@@ -164,7 +164,7 @@ Write to `runs/{run_id}/recommendations/{article_slug}.json`:
 ≤ 300-token summary to the orchestrator:
 
 ```
-{slug}: audit {score}/40 ({article_type}). {rec_count} recommendations ({critical_count} critical, {high_count} high). Top fix: {1-sentence paraphrase of rec-1}. Artefact: runs/{run_id}/recommendations/{slug}.json
+{slug}: audit {score}/40 ({article_type}). {rec_count} recommendations ({critical_count} critical, {high_count} high). Top fix: {1-sentence paraphrase of rec-1}. Artefact: {recommendations_dir}/{slug}.json
 ```
 
 Push state update via `mcp__blog-optimiser-dashboard__update_state`:

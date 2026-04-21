@@ -33,7 +33,7 @@ Plus Read/Write/Glob for disk I/O and `mcp__blog-optimiser-dashboard__show_banne
 
 ### Step 1 — Load the article's fingerprint
 
-Read `runs/{run_id}/articles/{article_slug}.json`. Pay attention to:
+Read `{articles_dir}/{article_slug}.json`. Pay attention to:
 - `title`, `h1`, `heading_tree` (top-level question-phrased H2s are the best prompt-match hints)
 - `entities_mentioned` (e.g. "Otter", "Fireflies", "Notion" for a meeting-notes article)
 - `structure.tables`, `faq_blocks_detected` (tell you what article type it is)
@@ -72,7 +72,7 @@ For each matched prompt, pull the full gap picture:
 
 ### Step 5 — Compose the gap record
 
-Write to `runs/{run_id}/gaps/{article_slug}.json`:
+Write to `{gaps_dir}/{article_slug}.json`:
 
 ```json
 {
@@ -134,7 +134,7 @@ Gap read for {article_slug}:
 - Chat excerpts captured: {N}.
 - Peec Actions: {N owned, M editorial, K ref, L ugc}.
 - Data freshness: {date}. Notes: {any warnings}.
-- Artefact: runs/{run_id}/gaps/{article_slug}.json
+- Artefact: {gaps_dir}/{article_slug}.json
 ```
 
 ## Guardrails

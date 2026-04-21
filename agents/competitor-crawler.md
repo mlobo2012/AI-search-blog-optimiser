@@ -95,7 +95,7 @@ For each URL:
 
 ### Step 3 — Write the record
 
-Write the list of competitor records to `runs/{run_id}/competitors/{article_slug}.json`:
+Write the list of competitor records to `{competitors_dir}/{article_slug}.json`:
 
 ```json
 {
@@ -127,7 +127,7 @@ Return a ≤200-token summary:
 ```
 Competitors crawled for {article_slug}: {N} URLs fetched.
 Failed: {domain: reason} per failure.
-Key gaps vs own-brand signals will be in runs/{run_id}/competitors/{article_slug}.json.
+Key gaps vs own-brand signals will be in {competitors_dir}/{article_slug}.json.
 Notable patterns: {1-2 bullets, e.g. "80% have year-modifier in title"}.
 ```
 

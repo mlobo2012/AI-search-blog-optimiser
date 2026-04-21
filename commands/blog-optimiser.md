@@ -42,5 +42,13 @@ Hand off to the `orchestrator` agent with the parsed arguments. The orchestrator
 
 - Never ship an optimised article with audit score < 32/40. Halt that article, surface the failing dimensions, let the user iterate.
 - Every recommendation MUST include the full evidence trail: Peec gap + Schmidt rule + competitor example + Step 1 field provenance. Drop or demote any rec without all four.
-- Never auto-push to a CMS. All outputs go to `runs/{ts}/optimised/` on disk for human review.
+- Never auto-push to a CMS. All outputs go to `~/.ai-search-blog-optimiser/runs/{run_id}/optimised/` on disk for human review.
 - Never silently fail. Every edge case surfaces a clear, actionable banner in the dashboard.
+
+## Writable paths (CRITICAL)
+
+The plugin install dir (`${CLAUDE_PLUGIN_ROOT}`) is READ-ONLY in sub-agent sandboxes. All writes go to the user's home directory at `~/.ai-search-blog-optimiser/`:
+- `~/.ai-search-blog-optimiser/runs/{run_id}/` — per-run state, articles, recommendations, optimised outputs
+- `~/.ai-search-blog-optimiser/brands/{peec_project_id}/` — persistent brand voice artefacts
+
+Sub-agents must NEVER write under the plugin root. The orchestrator resolves paths via `mcp__blog-optimiser-dashboard__get_paths` at stage start and passes absolute paths to every sub-agent invocation.

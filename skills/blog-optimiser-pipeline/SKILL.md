@@ -21,7 +21,7 @@ The canonical playbook consumed by the `blog-optimiser-orchestrator` agent. Enco
 ## Context management rules
 
 - **The orchestrator never reads article bodies.** It passes file paths to sub-agents and receives ≤ 500-token summaries.
-- **Disk is shared memory.** All cross-agent state lives in `runs/{run_id}/`.
+- **Disk is shared memory.** All cross-agent state lives in `{run_dir}/`.
 - **Each sub-agent loads what it needs, nothing more.** `recommender` loads the audit rubric + GEO rules; `blog-crawler` loads none.
 - **1M context windows on Cowork (Opus 4.6/4.7)** remove token-budget pressure on single-agent steps — but the sub-agent pattern stays for parallelism, context cleanliness, and failure isolation.
 

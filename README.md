@@ -23,7 +23,7 @@ The plugin opens a live local dashboard in your browser and runs a 4-agent pipel
 
 Every recommendation ships with a complete evidence trail: Peec gap signal + the relevant GEO rule + the competitor example + the exact article field the gap was detected in.
 
-Outputs land on disk in `runs/{timestamp}/optimised/` — markdown, styled HTML, JSON-LD schema, handoff doc, diff vs original, and every image preserved in a self-contained folder ready for your CMS.
+Outputs land on disk in `~/.ai-search-blog-optimiser/runs/{timestamp}/optimised/` — markdown, styled HTML, JSON-LD schema, handoff doc, diff vs original, and every image preserved in a self-contained folder ready for your CMS.
 
 ---
 
@@ -144,7 +144,16 @@ The orchestrator agent hasn't registered a run yet. Check Claude Desktop's chat 
 /blog-optimiser --resume {run_id}
 ```
 
-The `{run_id}` is a timestamp like `2026-04-21T18-52-33`. You'll find it under `runs/` in the plugin directory.
+The `{run_id}` is a timestamp like `2026-04-21T18-52-33`. You'll find it under `~/.ai-search-blog-optimiser/runs/`.
+
+### Where's my data?
+
+All writable state — runs, optimised articles, brand-voice artefacts — lives in `~/.ai-search-blog-optimiser/`:
+
+- `~/.ai-search-blog-optimiser/runs/{run_id}/` — per-run state, articles, recommendations, optimised outputs
+- `~/.ai-search-blog-optimiser/brands/{peec_project_id}/` — persistent brand voice profiles (safe to edit by hand; the voice-extractor merges rather than overwrites)
+
+Override via the `AI_SEARCH_BLOG_OPTIMISER_DATA` env var if you want a different location. The plugin install directory itself is read-only in Cowork's sandbox, so it never contains user data.
 
 ### Some articles are marked "partial" or "failed"
 

@@ -143,4 +143,4 @@ If Peec data is < 30 days or the project was just created:
 
 ## Cache hints for the orchestrator
 
-Within one pipeline run, topics and prompts rarely change. If the orchestrator invokes multiple `peec-gap-reader` calls for different articles on the same topic, it should cache `list_prompts(topic_id)` results to `runs/{run_id}/peec-cache/prompts-{topic_id}.json` and pass that path to subsequent readers to avoid redundant MCP calls.
+Within one pipeline run, topics and prompts rarely change. If the orchestrator invokes multiple `peec-gap-reader` calls for different articles on the same topic, it should cache `list_prompts(topic_id)` results to `{peec_cache_dir}/prompts-{topic_id}.json` and pass that path to subsequent readers to avoid redundant MCP calls.

@@ -12,18 +12,20 @@ You are the voice-extractor sub-agent. You read the full article corpus captured
 - `run_id`
 - `peec_project_id` (may be null if running in generic mode — use `generic-{domain-slug}` as the namespace then)
 - `role` (`own` or `competitor`)
+- `articles_dir` — absolute path to `{run_dir}/articles/`
+- `brands_dir` — absolute path to `{data_dir}/brands/` (where the voice artefact is written)
 
 ## Artefact destination
 
-- Own-brand: `.context/brands/{peec_project_id}/brand-voice.md`
-- Competitor view: `.context/brands/{peec_project_id}-competitor-view/{domain}/brand-voice.md`
-- Generic mode: `.context/brands/generic-{domain-slug}/brand-voice.md`
+- Own-brand: `{brands_dir}/{peec_project_id}/brand-voice.md`
+- Competitor view: `{brands_dir}/{peec_project_id}-competitor-view/{domain}/brand-voice.md`
+- Generic mode: `{brands_dir}/generic-{domain-slug}/brand-voice.md`
 
 Namespace separation is **non-negotiable**. Never write to the own-brand path when running on a competitor, and never read a competitor's voice when generating for the own brand.
 
 ## Procedure
 
-1. **Gather the corpus.** Glob `runs/{run_id}/articles/*.json`. Read all of them. You have 1M context — read every article fully; don't summarise pre-emptively.
+1. **Gather the corpus.** Glob `{articles_dir}/*.json`. Read all of them. You have 1M context — read every article fully; don't summarise pre-emptively.
 
 2. **Check for existing artefact.** If the target `brand-voice.md` already exists at the namespaced path, read it. You will UPDATE it, not overwrite — preserve validated human edits, surface drift vs. the new corpus in a `## Drift vs last run` section.
 
@@ -73,7 +75,7 @@ Write the markdown artefact with this exact structure:
 
 ```markdown
 # Brand Voice — {Brand Name}
-<!-- Namespaced by peec_project_id: {id} · role: {own|competitor} · source: runs/{run_id}/ -->
+<!-- Namespaced by peec_project_id: {id} · role: {own|competitor} · source: {run_dir}/ -->
 
 **Confidence:** {low|medium|high} ({N} articles analysed)
 **Updated:** {YYYY-MM-DD}
@@ -147,7 +149,7 @@ Concise summary:
 
 ```
 Voice extracted: {confidence} confidence, {N} samples.
-Artefact: .context/brands/{namespace}/brand-voice.md
+Artefact: {brands_dir}/{namespace}/brand-voice.md
 Summary line (for dashboard card): "{1-sentence voice description, ≤ 140 chars}"
 ```
 
