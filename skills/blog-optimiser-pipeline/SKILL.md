@@ -1,10 +1,10 @@
 ---
 name: blog-optimiser-pipeline
 description: Canonical orchestration playbook for the AI Search Blog Optimiser pipeline. Runs in the main session, uses disk-first state, and only opens the dashboard after a fresh run has been registered.
-version: 0.3.1
+version: 0.3.2
 ---
 
-# Blog Optimiser Pipeline (v0.3.1)
+# Blog Optimiser Pipeline (v0.3.2)
 
 This playbook is executed by the main session when `/blog-optimiser` runs. The main session is the orchestrator. Sub-agents are leaf workers only.
 

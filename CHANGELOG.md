@@ -2,6 +2,18 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.3.2] — 2026-04-22
+
+Dashboard review release focused on making the inline article workflow actually usable.
+
+### Added
+- Rebuilt the expanded article row into a persistent inline inspector with a recommendation rail plus `Optimized article`, `Structure`, and `Image` tabs.
+- Added richer implementation proof inside the dashboard: heading plan, internal link review, implementation notes, schema/meta summaries, and inline hero image treatment.
+
+### Changed
+- Kept the existing AI Heroes table shell and light theme, but made the expanded row behave more like an Airtable/Notion detail panel.
+- Kept raw artifact links as secondary actions while making recommendations and the optimized article the primary review surface.
+
 ## [0.3.1] — 2026-04-22
 
 Runtime fix focused on Cowork sandbox correctness during the crawl and downstream leaf-agent stages.

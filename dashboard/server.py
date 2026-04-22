@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI Search Blog Optimiser — local dashboard server (v0.3.0).
+AI Search Blog Optimiser — local dashboard server (v0.3.2).
 
 Two run modes:
   - Default (MCP stdio): Claude Cowork spawns this as its MCP server. The MCP
@@ -50,7 +50,7 @@ from urllib.parse import urlparse, urlunparse
 # user-writable location. Default roots are platform-native and versioned under
 # v3. Override with BLOG_OPTIMISER_DATA_ROOT for tests/dev only.
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 DEFAULT_GATE_TIMEOUT_SECONDS = 300
 
 
@@ -1608,7 +1608,7 @@ def _tool_download_media_asset(args: dict) -> dict:
     timeout_seconds = max(1, min(int(args.get("timeout_seconds", 15)), 60))
     _, target = _resolve_artifact_path(run_id, "media", relative_path)
     request = urllib.request.Request(source_url, headers={
-        "User-Agent": "Mozilla/5.0 (compatible; AI Search Blog Optimiser/0.3.1)"
+        "User-Agent": "Mozilla/5.0 (compatible; AI Search Blog Optimiser/0.3.2)"
     })
     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
         payload = response.read()
