@@ -1,281 +1,356 @@
 ---
 name: blog-optimiser-pipeline
-description: Canonical orchestration playbook for the AI Search Blog Optimiser pipeline. Runs IN THE MAIN SESSION (not via a sub-agent). Defines the 7-stage flow, disk-first state writes, gate mechanism for human-in-the-loop, parallelism pattern, and the embedded 15-point GEO + 40-point audit rubric for the recommender to use when the user's external skill banks aren't available.
-version: 0.2.0
+description: Canonical orchestration playbook for the AI Search Blog Optimiser pipeline. Runs in the main session, uses disk-first state, and only opens the dashboard after a fresh run has been registered.
+version: 0.3.1
 ---
 
-# Blog Optimiser Pipeline (v0.2)
+# Blog Optimiser Pipeline (v0.3.1)
 
-The canonical playbook executed BY THE MAIN SESSION when `/blog-optimiser` runs. This replaces the v0.1 pattern where a `blog-optimiser-orchestrator` sub-agent drove the flow — that handoff is removed.
+This playbook is executed by the main session when `/blog-optimiser` runs. The main session is the orchestrator. Sub-agents are leaf workers only.
 
-## Why main-session orchestration
+## Non-negotiables
 
-- **Browser opens only fire from the main session.** `mcp__blog-optimiser-dashboard__open_dashboard` produces a desktop-level side effect (the browser tab). When called from a sub-agent, Cowork silently drops the side effect.
-- **Parallelism is cleaner.** Multiple `Task` calls in a single main-session message run concurrently. A handoff to a sub-agent adds indirection and risks mid-run context compaction.
-- **Context stays lean.** The main session never reads article bodies; it passes paths + receives ≤300-token summaries. Compaction triggers that broke v0.1.1 don't fire.
+- Never open the dashboard before `register_run`.
+- Never call `open_dashboard` without a `run_id`.
+- Never call `get_paths`.
+- Never read historical runs during a new run.
+- Never use the Crawl4AI docs/context endpoint as a prereq probe.
+- Keep prereq outputs small and structured.
+- Leaf workers must use the dashboard MCP artifact tools for host-side reads and writes.
+- The absolute paths returned by `register_run` are for host-side MCP `output_path` arguments only. Do not use them with sandboxed `Bash`, `Read`, or `Write`.
 
-## The 7 stages
+## Pipeline stages
 
-```
-0. Prereq validation             → open dashboard, check Peec + Crawl4AI MCPs
-1. Peec project resolution       → list_projects, auto-match domain, register_run
-2. Blog crawl                    → Task(blog-crawler) — serial, writes articles/*.json
-   GATE                          → user reviews crawled list in dashboard, clicks Continue
-3. Voice extraction              → Task(voice-extractor) — one-shot
-   GATE                          → user reviews voice summary, clicks Continue
-4. Recommendations (parallel × 3) → Task(recommender) fan-out in batches of 3
-   GATE                          → user reviews accept/reject toggles, clicks Continue
-5. Article generation (parallel × 3) → Task(generator) fan-out in batches of 3
-6. Finalise                      → write run-summary.md, final state update
-```
+1. `prereqs`
+2. `crawl`
+3. `voice`
+4. `analysis`
+5. `recommendations`
+6. `draft`
 
-`--no-gates` skips the gate polling. `--resume {run_id}` picks up from the last-completed stage per article.
+The run's `state.json` is the source of truth. Update it on disk after every stage transition.
 
-## Stage 0 — Prereqs + dashboard
+## Fresh run flow
 
-**As the main session**, execute in this exact order:
+### Stage 0 — Prereqs
 
-1. Call `mcp__blog-optimiser-dashboard__open_dashboard` with `{open_browser: true}`. Capture the returned URL. This launches the dashboard HTTP server (if not running) and opens the user's default browser.
+Run prerequisites before creating or opening anything:
 
-2. Call `mcp__blog-optimiser-dashboard__get_paths`. Capture all absolute paths you'll pass to sub-agents (`data_dir`, `brands_dir`, `runs_dir`, and — once the run is registered — `run_dir`, `articles_dir`, `recommendations_dir`, `optimised_dir`, `media_dir`, `raw_dir`, `gaps_dir`, `competitors_dir`, `peec_cache_dir`, `state_json`, `decisions_json`).
-
-3. Probe Peec: call `mcp__peec__list_projects` with empty args. If it fails, note Peec unavailable and set `mode=generic`.
-
-4. Probe Crawl4AI: call `mcp__c4ai-sse__ask` with `{"query":"ping","url":"https://example.com"}`. If it fails, **hard-fail** with a `show_banner` error and stop. There's no fallback for crawling.
-
-## Stage 1 — Peec project resolution
-
-If Peec is available:
-
-1. Parse domain from the blog URL (e.g., `granola.ai` from `https://www.granola.ai/blog`).
-2. The `list_projects` response you captured in stage 0 is your project list. For each project, check if its tracked brand domain matches.
-3. **One match** → auto-select, `role=own`, proceed silently.
-4. **Multiple or none** → write a pending gate to `gates.json` asking the user to pick a project via the dashboard. Poll the gate.
-5. Call `mcp__blog-optimiser-dashboard__register_run` with `{blog_url, brand_name, peec_project_id, role}`. It creates `runs/{run_id}/` with all subdirs and an initial `state.json`.
-6. Use the returned paths for the rest of the pipeline.
-
-If Peec is unavailable, register the run with `peec_project_id=generic-{domain-slug}` and `role=unknown`. Push an info banner explaining generic mode.
-
-## Stage 2 — Blog crawl
-
-Dispatch the crawler:
-
-```
-Task(
-  subagent_type="blog-crawler",
-  prompt="""
-  run_id: {run_id}
-  blog_url: {blog_url}
-  max_articles: {max_articles}
-  articles_dir: {articles_dir}
-  media_dir: {media_dir}
-  raw_dir: {raw_dir}
-  state_json: {state_json}
-  """
-)
-```
-
-Wait for completion. The crawler writes `{articles_dir}/*.json` + downloaded images and returns a summary like `17 articles captured: [slugs...]; 1 partial (timeout on /blog/X)`.
-
-**After completion, YOU (main session) update state.json directly** — don't rely on the crawler's state pushes alone:
-
-1. Read current `state_json` via Read tool.
-2. Merge: `pipeline.crawl.status="completed"`, `pipeline.crawl.count=N`, articles[] populated.
-3. Write back atomically (Write tool, overwriting is fine since the file is yours).
-4. Call `mcp__blog-optimiser-dashboard__update_state` with the same fragment as a best-effort browser wake-up. If it fails, the browser's next 1.5s poll reads disk and gets the truth.
-
-**Crawl gate.** Unless `--no-gates`: write to `{run_dir}/gates.json`:
+1. Probe Peec with `mcp__peec__list_projects`.
+2. Probe Crawl4AI with:
 
 ```json
 {
-  "crawl_gate": {
-    "status": "pending",
-    "pending_since": "ISO-8601",
-    "prompt": "Review the crawled articles in the dashboard. Deselect any you want to skip, then click Continue.",
-    "resolved_at": null,
-    "user_action": null
+  "url": "https://example.com/"
+}
+```
+
+using `mcp__c4ai-sse__md`.
+
+Treat success as a small, non-empty response. If Crawl4AI fails, stop immediately. Do not open the dashboard.
+
+### Stage 1 — Register the run
+
+Call `mcp__blog-optimiser-dashboard__register_run` with:
+
+```json
+{
+  "blog_url": "<blog-url>",
+  "peec_project_id": "<matched-project-or-null>",
+  "refresh_voice": true|false
+}
+```
+
+Use the returned fields as authoritative:
+
+- `run_id`
+- `dashboard_url`
+- `run_dir`
+- `state_path`
+- `outputs_dir`
+- `articles_dir`
+- `recommendations_dir`
+- `optimised_dir`
+- `media_dir`
+- `raw_dir`
+- `gaps_dir`
+- `competitors_dir`
+- `peec_cache_dir`
+- `decisions_path`
+- `gates_path`
+- `run_summary_path`
+- `site_key`
+- `voice_baseline`
+- `voice_markdown_path`
+- `voice_meta_path`
+
+Immediately after registration, call:
+
+```json
+{
+  "run_id": "<run_id>",
+  "open_browser": true
+}
+```
+
+with `mcp__blog-optimiser-dashboard__open_dashboard`.
+
+### Stage 2 — Crawl
+
+Dispatch exactly one `Task(subagent_type="blog-crawler", ...)` and pass this exact input block in the prompt:
+
+```text
+run_id: <run_id>
+blog_url: <blog_url>
+max_articles: <max_articles>
+articles_dir: <articles_dir>
+media_dir: <media_dir>
+raw_dir: <raw_dir>
+state_json: <state_path>
+
+Use dashboard MCP artifact tools for all host-side reads and writes.
+Never use Bash/Read/Write on /Users/... paths.
+Discover article URLs only from actual hrefs or canonical URLs exposed by the index/article fetches.
+Never infer slugs from titles.
+Use this fetch order for article pages: md raw -> html.
+```
+
+After the crawler returns, immediately verify the real host-side outputs:
+
+1. Call `mcp__blog-optimiser-dashboard__list_artifacts` with `namespace="articles"` and `suffix=".json"`.
+2. If zero article JSON files exist:
+   - call `show_banner` with severity `error`
+   - set `pipeline.crawl.status = "failed"`
+   - set `status = "failed"`
+   - stop the pipeline
+3. If one or more article JSON files exist:
+   - set `pipeline.crawl.status = "completed"`
+   - checkpoint `state.json`
+
+Do not continue to voice, recommendations, or draft on an empty crawl.
+
+Unless `--no-gates` is set, stop here for review before Stage 3:
+
+1. Call `set_gate` with:
+
+```json
+{
+  "run_id": "<run_id>",
+  "gate": "crawl_gate",
+  "status": "pending",
+  "prompt": "Review the crawl output before voice extraction and Peec analysis.",
+  "timeout_seconds": 300
+}
+```
+
+2. Poll `get_gates` every 10 seconds.
+3. Do not continue until `crawl_gate.status == "resolved"`.
+
+### Stage 3 — Voice
+
+Check `voice_baseline.will_reuse` from `register_run`.
+
+If `true`:
+
+- skip the voice extractor
+- keep `voice.mode = "reused"`
+- keep `pipeline.voice.status = "completed"`
+
+If `false`:
+
+- run `voice-extractor` with this exact input block:
+
+```text
+run_id: <run_id>
+site_key: <site_key>
+canonical_blog_url: <canonical_blog_url>
+articles_dir: <articles_dir>
+site_dir: <site_dir>
+voice_markdown_path: <voice_markdown_path>
+voice_meta_path: <voice_meta_path>
+
+Use dashboard MCP artifact tools for all host-side reads and writes.
+Never use Bash/Read/Write on /Users/... paths.
+```
+
+- on success set `voice.mode = "generated"`
+- update `voice.summary`, `voice.updated_at`, and `voice.source_run_id`
+
+Unless `--no-gates` is set, stop here for review before Stage 4:
+
+1. Call `set_gate` with:
+
+```json
+{
+  "run_id": "<run_id>",
+  "gate": "voice_gate",
+  "status": "pending",
+  "prompt": "Review the extracted voice baseline before recommendations are generated.",
+  "timeout_seconds": 300
+}
+```
+
+2. Poll `get_gates` every 10 seconds.
+3. Do not continue until `voice_gate.status == "resolved"`.
+
+### Stage 4 — Analysis
+
+Before recommendation batches begin, mark:
+
+```json
+{
+  "pipeline": {
+    "analysis": {
+      "status": "running"
+    }
   }
 }
 ```
 
-Poll `gates.json` every 10 seconds for up to 5 minutes. The dashboard's Continue button writes `resolved_at` and `user_action="proceed"`. On timeout, auto-proceed and log it in state.json.
+This stage represents gap analysis and competitor evidence collection performed by the recommender flow.
 
-## Stage 3 — Voice extraction
+If `peec_project_id` is present, dispatch `peec-gap-reader` once per article before recommendations with:
 
-```
-Task(
-  subagent_type="voice-extractor",
-  prompt="""
-  run_id: {run_id}
-  peec_project_id: {peec_project_id}
-  role: {role}
-  articles_dir: {articles_dir}
-  brands_dir: {brands_dir}
-  """
-)
+```text
+run_id: <run_id>
+article_slug: <article_slug>
+peec_project_id: <peec_project_id>
 ```
 
-Returns a ≤150-token summary + writes `{brands_dir}/{peec_project_id}/brand-voice.md` (or the competitor-view path).
+Do this in batches of 3 in a single assistant message.
 
-Update state.json with `pipeline.voice.status="completed"` + the one-sentence summary.
+If a gap read succeeds, it should write `gaps/{article_slug}.json`.
 
-**Voice gate** unless `--no-gates`. Same pattern as crawl gate.
+If a gap read fails or the project has no usable prompt/topic data:
 
-## Stage 4 — Recommendations (parallel × 3)
+- keep the run moving
+- show a warning banner only if every article failed gap-read
+- let the recommender fall back to `voice-rubric` mode
 
-For each article, dispatch a recommender. **Dispatch in batches of 3 IN A SINGLE MESSAGE** for true parallelism:
+When the first successful recommendation artefact is written, mark `pipeline.analysis.status = "completed"`.
 
+### Stage 5 — Recommendations
+
+Dispatch recommenders in batches of 3 in a single assistant message.
+
+Each recommender receives:
+
+- `run_id`
+- `article_slug`
+- `peec_project_id`
+- `site_key`
+- `mode`
+- `voice_markdown_path`
+- `voice_meta_path`
+- absolute output paths from `register_run`
+
+Prompt contract additions:
+
+```text
+Use dashboard MCP artifact tools for all host-side reads and writes.
+Read article JSON from articles/{article_slug}.json.
+Read voice baseline from site/voice.json first. Only read site/brand-voice.md if site/voice.json is missing or malformed.
+Write recommendation JSON to recommendations/{article_slug}.json.
+Never use Bash/Read/Write on /Users/... paths.
 ```
-(single assistant message, three Task calls)
-Task(subagent_type="recommender", prompt="...article-1...")
-Task(subagent_type="recommender", prompt="...article-2...")
-Task(subagent_type="recommender", prompt="...article-3...")
-```
 
-Each recommender input includes: `run_id, article_slug, peec_project_id, role, mode, articles_dir, recommendations_dir, gaps_dir, competitors_dir, peec_cache_dir, brands_dir`.
+Set `mode = "peec-enriched"` only when `gaps/{article_slug}.json` exists. Otherwise set `mode = "voice-rubric"`.
 
-When all 3 return, update state.json with `pipeline.recommend.completed_articles += 3`, merge per-article stage updates, write disk + push MCP. Then dispatch the next batch.
+Recommender sub-agents update per-article `stages.recommendations` only. The main session owns top-level `pipeline.analysis` and `pipeline.recommendations` aggregate state.
 
-If any recommender fails: retry once. Second failure: mark that article's recommend stage `status=failed`, continue.
+After all recommender sub-agents return:
 
-When all articles are recommended: state.json `pipeline.recommend.status="completed"`.
+1. Call `list_artifacts` with `namespace="recommendations"` and `suffix=".json"`.
+2. If zero recommendation artefacts exist:
+   - call `show_banner` with severity `error`
+   - set `pipeline.recommendations.status = "failed"`
+   - set `status = "failed"`
+   - stop the pipeline
 
-**Recommend gate** unless `--no-gates`. Prompt: "Review the recommendations for each article in the dashboard. Accept/reject individual recommendations — anything you don't explicitly reject will be applied. Click Continue when ready."
+Unless `--no-gates` is set, stop here for review before Stage 6:
 
-## Stage 5 — Article generation (parallel × 3)
+1. Call `set_gate` with:
 
-Same batching pattern. Generator input: `run_id, article_slug, peec_project_id, articles_dir, recommendations_dir, optimised_dir, media_dir, brands_dir, decisions_json`.
-
-The generator re-reads `decisions_json` inside its run to respect any user rejections.
-
-After each batch, update state.json. When all articles generated: state.json `pipeline.generate.status="completed"`.
-
-## Stage 6 — Finalise
-
-1. Write `{run_dir}/run-summary.md` — aggregate table of before/after scores, approval status, path to each article's handoff doc.
-2. Update state.json with `banners[]` entry: info severity, message "Run complete. Review approved articles in the dashboard or in {optimised_dir}."
-3. Return concise summary to the user (≤500 tokens): counts, dashboard URL, run path.
-
-## Gate mechanism details
-
-### Writing a gate
-
-```python
-# Conceptual — do this via Write tool
+```json
 {
-  "crawl_gate": { "status": "pending", "pending_since": "...", "prompt": "..." },
-  "voice_gate": { "status": "not-pending" },
-  "recommend_gate": { "status": "not-pending" }
+  "run_id": "<run_id>",
+  "gate": "recommend_gate",
+  "status": "pending",
+  "prompt": "Review the recommendation set before draft generation.",
+  "timeout_seconds": 300
 }
 ```
 
-### Polling a gate
+2. Poll `get_gates` every 10 seconds.
+3. Do not continue until `recommend_gate.status == "resolved"`.
 
-Use a Bash loop. Check once every 10s. Timeout at 5 minutes.
+### Stage 6 — Draft
 
-```bash
-for i in $(seq 30); do
-  status=$(python3 -c "import json; print(json.load(open('{gates_json}')).get('crawl_gate',{}).get('status','?'))")
-  if [ "$status" = "resolved" ]; then break; fi
-  sleep 10
-done
+Dispatch generators in batches of 3 in a single assistant message.
+
+Each generator receives:
+
+- `run_id`
+- `article_slug`
+- `peec_project_id`
+- `site_key`
+- `voice_markdown_path`
+- `voice_meta_path`
+- absolute output paths from `register_run`
+
+Prompt contract additions:
+
+```text
+Use dashboard MCP artifact tools for all host-side reads and writes.
+Read article JSON from articles/{article_slug}.json.
+Read recommendation JSON from recommendations/{article_slug}.json.
+Read decisions from run/decisions.json.
+Read voice baseline from site/voice.json first. Only read site/brand-voice.md if site/voice.json is missing or malformed.
+Write draft artefacts under optimised/{article_slug}.*.
+Never use Bash/Read/Write on /Users/... paths.
 ```
 
-If the loop exits without `resolved`, the gate timed out — auto-proceed and note in state.json.
+Generator sub-agents update per-article `stages.draft` only. The main session owns top-level `pipeline.draft` aggregate state.
 
-### Dashboard Continue button
+## Gates
 
-The dashboard's `POST /api/runs/{run_id}/gate` with `{"gate": "crawl_gate", "action": "proceed"}` writes `resolved_at` and `user_action="proceed"` to gates.json.
+Unless `--no-gates` is set, use gates after:
+
+- crawl
+- voice
+- recommendations
+
+The dashboard reads `gates.json` from disk. When opening a gate, write it with a 5-minute timeout. Poll `get_gates` every 10 seconds and trust the returned status as authoritative. Never infer timeout from wall-clock time in the conversation. The server resolves expired gates and records `timeout-auto-proceed` itself.
 
 ## Resume mode
 
-`--resume {run_id}`:
-1. Read `{run_dir}/state.json`. For each stage, check status.
-2. If crawl is `completed`, skip stage 2. Otherwise resume with the list of articles that don't have `stages.crawl.status="completed"`.
-3. Same logic for voice, recommend, generate.
-4. Never redo completed work.
+For `--resume {run_id}`:
 
-## Embedded 15-point GEO checklist
+1. Read `{run_dir}/state.json`.
+2. Set `session.mode = "resumed"`.
+3. Open the dashboard for that exact `run_id`.
+4. Resume only incomplete stages:
+   - if `pipeline.crawl.status == "completed"`, do not re-crawl
+   - if `voice.mode == "reused"` or `pipeline.voice.status == "completed"`, do not regenerate voice unless `--refresh-voice`
+   - skip any article whose `stages.recommendations.status == "completed"`
+   - skip any article whose `stages.draft.status == "completed"`
 
-(Used by the recommender when the user's external skill banks aren't installed.)
+## Final state expectations
 
-1. **Trust block at top** — 30–60 word direct answer, followed by 1–2 atomic paragraphs with cited sources + visible last-updated date + named author.
-2. **Atomic paragraphs** — no paragraph > ~150 words or ~3 sentences for primary claims.
-3. **Question-based H2/H3** — every heading mirrors an actual user prompt.
-4. **Tables for structured data** — pricing, feature matrices, specs in `<table>`, not prose.
-5. **Concrete numbers in titles/H2s** — "7 X for Y", not "Several X to consider".
-6. **Current-year modifier** — 2026 in title, slug, at least one H2.
-7. **Target 1,500–2,500 words** — Profound benchmark.
-8. **Specialized schema** — FAQPage, HowTo, Product, Person, Organization over generic Article.
-9. **Cite primary sources inline** — `.gov`, `.edu`, analyst firms as "According to [NIH, 2025], …".
-10. **Named, credentialed author + Person schema** — avoid "Staff" bylines.
-11. **Original data or framework** — at least one proprietary stat, named framework, or first-hand case.
-12. **Listicle / comparison / how-to format bias** — but NEVER rank your own product #1 in a self-promo listicle.
-13. **Shippable-noun presence** — concrete buyable nouns for commerce pages.
-14. **Multimodal enrichment** — FAQs, videos, images, specs lift citation rates.
-15. **Chunk-extractability self-test** — every H2 section answers its implied question standalone.
+By the end of a successful run, `state.json` should contain:
 
-## Embedded 40-point audit rubric
+- `run_id`
+- `created_at`
+- `status`
+- `blog_url`
+- `canonical_blog_url`
+- `site_key`
+- `dashboard_url`
+- `peec_project`
+- `voice`
+- `voice_baseline`
+- `pipeline`
+- `articles`
+- `outputs`
 
-Scored binary pass/fail. Total 40. Minimum passing 32.
-
-### Retrieval foundation (6 pts)
-- [ ] Robots.txt allows major AI crawlers (GPTBot, ClaudeBot, PerplexityBot, Google-Extended)
-- [ ] Canonical URL set correctly
-- [ ] Meta description present, 120–155 chars
-- [ ] Alt text on ≥80% of images
-- [ ] Updated-at date within last 12 months
-- [ ] Semantic HTML (proper H1→H6 hierarchy, `<article>`/`<section>`)
-
-### Chunk extractability (8 pts)
-- [ ] Trust block in first 60 words
-- [ ] Atomic paragraph ratio ≥ 0.6
-- [ ] H2s phrased as user prompts (question or imperative)
-- [ ] ≥1 table for structured data where relevant
-- [ ] ≥1 concrete number/stat in title or an H2
-- [ ] Every H2 section extractable standalone
-- [ ] Current-year modifier present
-- [ ] Word count in 1,200–3,000 band
-
-### Schema & entities (6 pts)
-- [ ] Article or type-specific schema present
-- [ ] FAQPage schema (if ≥3 Q&A)
-- [ ] Person schema for author
-- [ ] Organization schema
-- [ ] BreadcrumbList schema
-- [ ] HowTo schema (if how-to type)
-
-### Authority & trust (6 pts)
-- [ ] Named author (not "Staff")
-- [ ] Author role / credential visible on page
-- [ ] Author photo
-- [ ] Author LinkedIn or profile link
-- [ ] Publish date AND updated date visible
-- [ ] Person schema linked to author byline
-
-### Citation-worthiness (6 pts)
-- [ ] ≥1 inline `.gov`/`.edu`/analyst/named-study citation
-- [ ] Proprietary stat / framework / case with numbers
-- [ ] ≥3 named entities (products, companies, people)
-- [ ] ≥3 internal cross-links
-- [ ] Not a self-promo listicle (own product not at #1/#2)
-- [ ] External citation register ≥ median for category
-
-### Article-type-specific (8 pts)
-See per-type presets: listicle, how-to, comparison, glossary, case-study, pillar, opinion, product. Each swaps 8 points in.
-
-## Per-engine citation benchmarks
-
-- **ChatGPT**: target ≥ 2.0 citation rate (average > 2.5)
-- **Google AI Mode**: target 1.1–1.5 (average > 1.2)
-- **Perplexity**: target 1.5–2.0 (average 0.5 — don't over-index on Perplexity)
-
-Metrics `visibility`, `share_of_voice`, `retrieved_percentage` are 0–1 ratios (×100 for display). `sentiment` is 0–100. `position` is rank (lower = better). `retrieval_rate` and `citation_rate` are averages — **never** ×100.
-
-## Strategic non-goals
-
-Agents must not:
-- Generate mass AI content (100% of pages removed under Google's 2024 spam policy had AI content)
-- Optimise for a single engine (89% of cited domains diverge between ChatGPT and Perplexity)
-- Publish self-promo listicles ranking own brand #1
-- Auto-push to a CMS
+Do not invent additional orchestration state outside this file unless it is written to the run directory.

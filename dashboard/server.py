@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-AI Search Blog Optimiser — local dashboard server (v0.2.0).
+AI Search Blog Optimiser — local dashboard server (v0.3.0).
 
 Two run modes:
   - Default (MCP stdio): Claude Cowork spawns this as its MCP server. The MCP
-    side exposes tools for agents to push state updates. HTTP side runs as a
+    side exposes tools for run bootstrap and state pushes. HTTP side runs as a
     DETACHED subprocess so it survives MCP restarts.
   - --http-daemon: long-lived HTTP server. Spawned by the MCP on first need;
     survives MCP lifecycle (idle kill, plugin reload, session transitions).
-    Writes PID + port to ~/.ai-search-blog-optimiser/dashboard.lock.
+    Writes PID + port to the plugin data root's dashboard.lock.
 
 Why detached: in Cowork, MCP stdio servers get killed on idle/session-boundary.
 If the HTTP server were a thread in the MCP process, the browser tab would
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import html
 import http.server
 import json
 import os
@@ -34,8 +35,10 @@ import time
 import traceback
 import urllib.request
 import webbrowser
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 # ---------------------------------------------------------------------------
 # Paths + state
@@ -43,16 +46,33 @@ from typing import Any
 #
 # Important: in Claude Cowork, ${CLAUDE_PLUGIN_ROOT} is mounted READ-ONLY for
 # sub-agents. Static assets (HTML, CSS, fonts, logos) can be served from there,
-# but all WRITABLE state (runs, brand voice artefacts, decisions) must live in
-# a user-writable location. Default: ~/.ai-search-blog-optimiser/. Override with
-# --data-dir or the AI_SEARCH_BLOG_OPTIMISER_DATA env var.
+# but all WRITABLE state (runs, voice baselines, decisions) must live in a
+# user-writable location. Default roots are platform-native and versioned under
+# v3. Override with BLOG_OPTIMISER_DATA_ROOT for tests/dev only.
+
+VERSION = "0.3.1"
+DEFAULT_GATE_TIMEOUT_SECONDS = 300
+
+
+def _default_data_dir() -> Path:
+    if os.name == "nt":
+        appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        return appdata / "ai-search-blog-optimiser" / "v3"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "ai-search-blog-optimiser" / "v3"
+    return Path.home() / ".local" / "share" / "ai-search-blog-optimiser" / "v3"
+
+
+def _resolve_data_dir() -> Path:
+    override = os.environ.get("BLOG_OPTIMISER_DATA_ROOT")
+    return Path(override).expanduser().resolve() if override else _default_data_dir()
 
 PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", Path(__file__).resolve().parent.parent))
 DASHBOARD_DIR = PLUGIN_ROOT / "dashboard"
 
-DATA_DIR = Path(os.environ.get("AI_SEARCH_BLOG_OPTIMISER_DATA", Path.home() / ".ai-search-blog-optimiser"))
+DATA_DIR = _resolve_data_dir()
 RUNS_DIR = DATA_DIR / "runs"
-BRANDS_DIR = DATA_DIR / "brands"
+SITES_DIR = DATA_DIR / "sites"
 LOCK_FILE = DATA_DIR / "dashboard.lock"
 
 STATE_LOCK = threading.RLock()
@@ -85,6 +105,14 @@ def _atomic_write(path: Path, data: str) -> None:
     tmp.replace(path)
 
 
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write bytes atomically via .tmp + rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+
+
 def _read_json(path: Path) -> Any:
     if not path.exists():
         return None
@@ -96,6 +124,124 @@ def _read_json(path: Path) -> Any:
 
 def _write_json(path: Path, data: Any) -> None:
     _atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def _now_iso() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_iso(timestamp: Any) -> datetime | None:
+    if not isinstance(timestamp, str):
+        return None
+    try:
+        return datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+
+
+def _normalize_timeout_seconds(value: Any) -> int:
+    try:
+        timeout_seconds = int(value)
+    except (TypeError, ValueError):
+        timeout_seconds = DEFAULT_GATE_TIMEOUT_SECONDS
+    return max(1, min(timeout_seconds, 3600))
+
+
+def _slugify_site_key(host: str) -> str:
+    host = host.strip().lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _canonicalize_blog_url(blog_url: str) -> str:
+    parsed = urlparse(blog_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid blog URL: {blog_url}")
+    path = parsed.path or "/"
+    if path != "/" and path.endswith("/"):
+        path = path[:-1]
+    canonical = parsed._replace(
+        scheme=parsed.scheme.lower(),
+        netloc=parsed.netloc.lower(),
+        path=path,
+        params="",
+        query="",
+        fragment="",
+    )
+    return urlunparse(canonical)
+
+
+def _site_key_from_blog_url(blog_url: str) -> str:
+    parsed = urlparse(blog_url)
+    if not parsed.hostname:
+        raise ValueError(f"Invalid blog URL: {blog_url}")
+    return _slugify_site_key(parsed.hostname)
+
+
+def _site_paths(site_key: str) -> dict[str, Path]:
+    site_dir = SITES_DIR / site_key
+    return {
+        "site_dir": site_dir,
+        "voice_markdown_path": site_dir / "brand-voice.md",
+        "voice_meta_path": site_dir / "voice.json",
+    }
+
+
+def _output_paths(run_dir: Path) -> dict[str, Path]:
+    outputs_dir = run_dir / "outputs"
+    return {
+        "outputs_dir": outputs_dir,
+        "articles_dir": outputs_dir / "articles",
+        "recommendations_dir": outputs_dir / "recommendations",
+        "optimised_dir": outputs_dir / "optimised",
+        "media_dir": outputs_dir / "media",
+        "raw_dir": outputs_dir / "raw",
+        "gaps_dir": outputs_dir / "gaps",
+        "competitors_dir": outputs_dir / "competitors",
+        "peec_cache_dir": outputs_dir / "peec-cache",
+    }
+
+
+def _build_run_paths(run_dir: Path) -> dict[str, str]:
+    output_paths = _output_paths(run_dir)
+    paths: dict[str, str] = {
+        "run_dir": str(run_dir),
+        "state_path": str(run_dir / "state.json"),
+        "decisions_path": str(run_dir / "decisions.json"),
+        "gates_path": str(run_dir / "gates.json"),
+        "run_summary_path": str(run_dir / "run-summary.md"),
+    }
+    paths.update({key: str(value) for key, value in output_paths.items()})
+    return paths
+
+
+def _next_run_id() -> str:
+    base = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S")
+    candidate = base
+    counter = 1
+    while (RUNS_DIR / candidate).exists():
+        candidate = f"{base}-{counter:02d}"
+        counter += 1
+    return candidate
+
+
+def _read_voice_baseline(site_key: str, refresh_voice: bool) -> dict[str, Any]:
+    paths = _site_paths(site_key)
+    voice_meta = _read_json(paths["voice_meta_path"])
+    exists = False
+    if isinstance(voice_meta, dict) and voice_meta.get("site_key") == site_key and paths["voice_markdown_path"].exists():
+        exists = True
+    baseline = {
+        "exists": exists,
+        "site_key_match": exists,
+        "will_reuse": exists and not refresh_voice,
+        "site_dir": str(paths["site_dir"]),
+        "markdown_path": str(paths["voice_markdown_path"]),
+        "meta_path": str(paths["voice_meta_path"]),
+        "summary": voice_meta.get("summary") if exists else None,
+        "updated_at": voice_meta.get("updated_at") if exists else None,
+        "source_run_id": voice_meta.get("source_run_id") if exists else None,
+    }
+    return baseline
 
 
 def _list_runs() -> list[dict]:
@@ -116,6 +262,347 @@ def _list_runs() -> list[dict]:
     return entries
 
 
+ARTIFACT_NAMESPACES = [
+    "run",
+    "site",
+    "articles",
+    "recommendations",
+    "optimised",
+    "raw",
+    "gaps",
+    "competitors",
+    "peec_cache",
+    "media",
+]
+
+
+def _artifact_base_dir(run_id: str, namespace: str) -> Path:
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists() or not run_dir.is_dir():
+        raise ValueError(f"Run {run_id} does not exist")
+    state = _read_json(run_dir / "state.json") or {}
+    output_paths = _output_paths(run_dir)
+    mapping = {
+        "run": run_dir,
+        "site": Path(
+            (state.get("outputs") or {}).get("site_dir")
+            or _site_paths(state.get("site_key", ""))["site_dir"]
+        ),
+        "articles": output_paths["articles_dir"],
+        "recommendations": output_paths["recommendations_dir"],
+        "optimised": output_paths["optimised_dir"],
+        "raw": output_paths["raw_dir"],
+        "gaps": output_paths["gaps_dir"],
+        "competitors": output_paths["competitors_dir"],
+        "peec_cache": output_paths["peec_cache_dir"],
+        "media": output_paths["media_dir"],
+    }
+    if namespace not in mapping:
+        raise ValueError(f"Unknown artifact namespace: {namespace}")
+    return mapping[namespace].resolve()
+
+
+def _resolve_artifact_path(run_id: str, namespace: str, relative_path: str) -> tuple[Path, Path]:
+    if not relative_path:
+        raise ValueError("relative_path is required")
+    relative = Path(relative_path)
+    if relative.is_absolute() or any(part in {"..", ""} for part in relative.parts):
+        raise ValueError(f"Unsafe relative_path: {relative_path}")
+    base_dir = _artifact_base_dir(run_id, namespace)
+    target = (base_dir / relative).resolve()
+    if not str(target).startswith(str(base_dir) + os.sep):
+        raise ValueError(f"Path escapes namespace root: {relative_path}")
+    return base_dir, target
+
+
+def _validate_text_write(namespace: str, relative_path: str) -> None:
+    if namespace == "run" and relative_path != "run-summary.md":
+        raise ValueError("run namespace text writes are limited to run-summary.md")
+    if namespace == "site" and relative_path != "brand-voice.md":
+        raise ValueError("site namespace text writes are limited to brand-voice.md")
+
+
+def _validate_json_write(namespace: str, relative_path: str) -> None:
+    if namespace == "run":
+        raise ValueError("run namespace JSON writes are not allowed via artifact tools")
+    if namespace == "site" and relative_path != "voice.json":
+        raise ValueError("site namespace JSON writes are limited to voice.json")
+
+
+def _render_markdown_preview(markdown: str) -> str:
+    lines = (markdown or "").splitlines()
+    blocks: list[str] = []
+    paragraph: list[str] = []
+    list_items: list[str] = []
+    code_lines: list[str] = []
+    in_code = False
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph
+        if not paragraph:
+            return
+        text = " ".join(part.strip() for part in paragraph if part.strip())
+        if text:
+            blocks.append(f"<p>{html.escape(text)}</p>")
+        paragraph = []
+
+    def flush_list() -> None:
+        nonlocal list_items
+        if not list_items:
+            return
+        items = "".join(f"<li>{html.escape(item)}</li>" for item in list_items)
+        blocks.append(f"<ul>{items}</ul>")
+        list_items = []
+
+    def flush_code() -> None:
+        nonlocal code_lines
+        if not code_lines:
+            return
+        code = html.escape("\n".join(code_lines))
+        blocks.append(f"<pre><code>{code}</code></pre>")
+        code_lines = []
+
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            flush_paragraph()
+            flush_list()
+            if in_code:
+                flush_code()
+                in_code = False
+            else:
+                in_code = True
+            continue
+
+        if in_code:
+            code_lines.append(line)
+            continue
+
+        if not stripped:
+            flush_paragraph()
+            flush_list()
+            continue
+
+        if stripped.startswith("# "):
+            flush_paragraph()
+            flush_list()
+            blocks.append(f"<h1>{html.escape(stripped[2:])}</h1>")
+            continue
+
+        if stripped.startswith("## "):
+            flush_paragraph()
+            flush_list()
+            blocks.append(f"<h2>{html.escape(stripped[3:])}</h2>")
+            continue
+
+        if stripped.startswith("### "):
+            flush_paragraph()
+            flush_list()
+            blocks.append(f"<h3>{html.escape(stripped[4:])}</h3>")
+            continue
+
+        if stripped.startswith(("- ", "* ")):
+            flush_paragraph()
+            list_items.append(stripped[2:].strip())
+            continue
+
+        paragraph.append(stripped)
+
+    flush_paragraph()
+    flush_list()
+    flush_code()
+    return "\n".join(blocks)
+
+
+def _render_article_preview_html(article: dict[str, Any]) -> str:
+    title = article.get("title") or article.get("slug") or "Article"
+    slug = article.get("slug") or ""
+    author = ((article.get("trust") or {}).get("author") or {}).get("name") or "Unknown author"
+    role = ((article.get("trust") or {}).get("author") or {}).get("role") or ""
+    published_at = ((article.get("trust") or {}).get("published_at")) or ""
+    word_count = ((article.get("structure") or {}).get("word_count")) or ""
+    source_url = article.get("url") or ""
+    body_md = article.get("body_md") or ""
+    body_html = _render_markdown_preview(body_md)
+    meta_bits = [bit for bit in [author, role, published_at, f"{word_count} words" if word_count else ""] if bit]
+    meta_line = " · ".join(meta_bits)
+    source_link = (
+        f'<a href="{html.escape(source_url, quote=True)}" target="_blank" rel="noopener">Open original page</a>'
+        if source_url
+        else ""
+    )
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{html.escape(title)} · Source Preview</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --ink: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --surface: #f8fafc;
+      --accent: #00aeef;
+      --accent-soft: #e6f7fd;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: white;
+      line-height: 1.6;
+    }}
+    main {{
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }}
+    header {{
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 32px;
+      padding-bottom: 20px;
+    }}
+    .eyebrow {{
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: #0369a1;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }}
+    h1 {{
+      margin: 16px 0 10px;
+      font-size: clamp(2rem, 5vw, 2.8rem);
+      line-height: 1.1;
+    }}
+    .meta {{
+      color: var(--muted);
+      font-size: 0.95rem;
+    }}
+    .meta a {{
+      color: #0369a1;
+    }}
+    article h2 {{
+      margin-top: 32px;
+      font-size: 1.35rem;
+    }}
+    article h3 {{
+      margin-top: 24px;
+      font-size: 1.1rem;
+    }}
+    article p {{
+      margin: 0 0 14px;
+    }}
+    article ul {{
+      margin: 0 0 18px 20px;
+    }}
+    article pre {{
+      overflow-x: auto;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 0.9rem;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">Captured article</div>
+      <h1>{html.escape(title)}</h1>
+      <div class="meta">{html.escape(meta_line)}{' · ' if meta_line and source_link else ''}{source_link}</div>
+      <div class="meta" style="margin-top: 8px;">Slug: <code>{html.escape(slug)}</code></div>
+    </header>
+    <article>{body_html or '<p>No article body was captured for this run.</p>'}</article>
+  </main>
+</body>
+</html>"""
+
+
+def _hydrate_gates(run_dir: Path) -> dict[str, Any]:
+    gates_path = run_dir / "gates.json"
+    with STATE_LOCK:
+        gates = _read_json(gates_path) or {}
+        changed = False
+        now = datetime.utcnow()
+        for gate in gates.values():
+            if not isinstance(gate, dict):
+                continue
+            timeout_seconds = _normalize_timeout_seconds(gate.get("timeout_seconds"))
+            gate["timeout_seconds"] = timeout_seconds
+            pending_since = _parse_iso(gate.get("pending_since"))
+            if pending_since:
+                expires_at = pending_since + timedelta(seconds=timeout_seconds)
+                gate["expires_at"] = expires_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if gate.get("status") == "pending" and now >= expires_at:
+                    gate["status"] = "resolved"
+                    gate["resolved_at"] = _now_iso()
+                    gate["user_action"] = "timeout-auto-proceed"
+                    changed = True
+            elif gate.get("status") == "pending":
+                gate["pending_since"] = _now_iso()
+                gate["expires_at"] = (datetime.utcnow() + timedelta(seconds=timeout_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                changed = True
+        if changed:
+            _write_json(gates_path, gates)
+        return gates
+
+
+def _refresh_pipeline_aggregates(state: dict[str, Any]) -> None:
+    pipeline = state.setdefault("pipeline", {})
+    articles = [article for article in state.get("articles", []) if isinstance(article, dict) and article.get("slug")]
+    if not articles:
+        return
+
+    for stage_name in ("recommendations", "draft"):
+        existing = pipeline.get(stage_name)
+        aggregate = dict(existing) if isinstance(existing, dict) else {}
+        statuses = [
+            ((article.get("stages") or {}).get(stage_name) or {}).get("status", "pending")
+            for article in articles
+        ]
+        total = len(statuses)
+        completed = sum(status == "completed" for status in statuses)
+        running = sum(status == "running" for status in statuses)
+        failed = sum(status == "failed" for status in statuses)
+        partial = sum(status == "partial" for status in statuses)
+
+        if total and completed == total:
+            status = "completed"
+        elif running:
+            status = "running"
+        elif aggregate.get("status") == "running" and completed < total and not failed:
+            status = "running"
+        elif completed or failed or partial:
+            status = "partial"
+        else:
+            status = "pending"
+
+        aggregate["status"] = status
+        aggregate["completed_articles"] = completed
+        aggregate["total"] = total
+        if failed:
+            aggregate["failed_articles"] = failed
+        else:
+            aggregate.pop("failed_articles", None)
+        pipeline[stage_name] = aggregate
+
+    pipeline.setdefault("crawl", {})
+    if isinstance(pipeline["crawl"], dict):
+        pipeline["crawl"]["article_count"] = len(articles)
+
+
 # ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
@@ -124,11 +611,12 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
     """Serve dashboard HTML + a small JSON API, handle POST actions.
 
     Routes:
-      GET  /                         → latest run's dashboard (or run-picker if none)
+      GET  /                         → home / history page
       GET  /runs/{run_id}/           → specific run dashboard
       GET  /api/runs                 → list of all runs (JSON)
       GET  /api/runs/{run_id}/state  → state.json for a run
       GET  /api/runs/{run_id}/articles/{slug}  → article record
+      GET  /api/runs/{run_id}/article-preview/{slug}.html  → rendered source article preview
       GET  /api/runs/{run_id}/recommendations/{slug}  → recs for an article
       POST /api/runs/{run_id}/actions  → accept/reject/approve action
       GET  /static/...               → static assets (CSS, JS, fonts, images)
@@ -145,7 +633,7 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
         try:
             path = self.path.split("?")[0].rstrip("/")
             if path == "" or path == "/":
-                return self._serve_latest_or_picker()
+                return self._serve_home()
             if path == "/api/runs":
                 return self._serve_json(_list_runs())
             if path.startswith("/api/runs/"):
@@ -155,8 +643,8 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
             if path.startswith("/static/"):
                 return self._serve_static(path[len("/static/"):])
             if path == "/health":
-                return self._serve_json({"status": "ok", "version": "0.1.0"})
-            return self._serve_static("index.html")
+                return self._serve_json({"status": "ok", "version": VERSION})
+            self.send_error(404, "Not Found")
         except Exception as e:
             _log(f"GET {self.path} failed: {e}\n{traceback.format_exc()}")
             self.send_error(500, str(e))
@@ -178,28 +666,26 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     # ---- serving -----------------------------------------------------------
 
-    def _serve_latest_or_picker(self):
-        runs = _list_runs()
-        if runs:
-            run_id = runs[0]["run_id"]
-            self.send_response(302)
-            self.send_header("Location", f"/runs/{run_id}/")
-            self.end_headers()
-            return
+    def _serve_home(self):
         return self._serve_static("welcome.html")
 
     def _serve_run_index(self, path: str):
         # /runs/{run_id}/ → serves dashboard/index.html
+        parts = path.strip("/").split("/")
+        if len(parts) < 2:
+            self.send_error(400, "Malformed run path")
+            return
+        run_id = parts[1]
+        if not (RUNS_DIR / run_id).exists():
+            self.send_error(404, f"Run {run_id} not found")
+            return
         return self._serve_static("index.html")
 
     def _serve_static(self, relative: str):
         target = DASHBOARD_DIR / relative
         if not target.exists() or not target.is_file():
-            # fall back to index.html for SPA-style routing
-            target = DASHBOARD_DIR / "index.html"
-            if not target.exists():
-                self.send_error(404, "Dashboard assets not found")
-                return
+            self.send_error(404, "Dashboard assets not found")
+            return
         content = target.read_bytes()
         ext = target.suffix.lower()
         ctype = {
@@ -223,9 +709,18 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(content)
 
     def _serve_json(self, data: Any, status: int = 200):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_html_string(self, content: str, status: int = 200):
+        body = content.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
@@ -234,6 +729,7 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
     def _serve_run_api(self, path: str):
         # /api/runs/{run_id}/state
         # /api/runs/{run_id}/articles/{slug}
+        # /api/runs/{run_id}/article-preview/{slug}.html
         # /api/runs/{run_id}/recommendations/{slug}
         # /api/runs/{run_id}/decisions
         parts = path.strip("/").split("/")
@@ -255,25 +751,36 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
             decisions = _read_json(run_dir / "decisions.json") or {}
             return self._serve_json(decisions)
         if remainder == ["gates"]:
-            gates = _read_json(run_dir / "gates.json") or {}
+            gates = _hydrate_gates(run_dir)
             return self._serve_json(gates)
+        output_paths = _output_paths(run_dir)
         if len(remainder) == 2 and remainder[0] == "articles":
-            data = _read_json(run_dir / "articles" / f"{remainder[1]}.json")
+            data = _read_json(output_paths["articles_dir"] / f"{remainder[1]}.json")
             if data is None:
                 self.send_error(404, "Article not found")
                 return
             return self._serve_json(data)
+        if len(remainder) == 2 and remainder[0] == "article-preview":
+            slug = remainder[1]
+            if slug.endswith(".html"):
+                slug = slug[:-5]
+            data = _read_json(output_paths["articles_dir"] / f"{slug}.json")
+            if data is None:
+                self.send_error(404, "Article not found")
+                return
+            return self._serve_html_string(_render_article_preview_html(data))
         if len(remainder) == 2 and remainder[0] == "recommendations":
-            data = _read_json(run_dir / "recommendations" / f"{remainder[1]}.json")
+            data = _read_json(output_paths["recommendations_dir"] / f"{remainder[1]}.json")
             if data is None:
                 self.send_error(404, "Recommendations not found")
                 return
             return self._serve_json(data)
-        if len(remainder) >= 2 and remainder[0] == "optimised":
-            # Serve files under runs/{run_id}/optimised/ (HTML preview, media)
+        if len(remainder) >= 2 and remainder[0] in {"optimised", "media", "raw"}:
+            # Serve files under runs/{run_id}/outputs/... (HTML previews, media).
             rel = "/".join(remainder[1:])
-            target = (run_dir / "optimised" / rel).resolve()
-            if not str(target).startswith(str((run_dir / "optimised").resolve())):
+            base_dir = output_paths[f"{remainder[0]}_dir"].resolve()
+            target = (base_dir / rel).resolve()
+            if not str(target).startswith(str(base_dir)):
                 self.send_error(403, "Path traversal rejected")
                 return
             if not target.exists() or not target.is_file():
@@ -320,7 +827,7 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
             gates = _read_json(gates_path) or {}
             gate = gates.setdefault(gate_name, {})
             gate["status"] = "resolved"
-            gate["resolved_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            gate["resolved_at"] = _now_iso()
             gate["user_action"] = gate_action
             if note:
                 gate["user_note"] = note
@@ -355,7 +862,7 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
                 article_decisions["rerun_requested"] = True
             if action_type == "set_brand_role":
                 decisions["brand_role_override"] = payload.get("role")
-            decisions["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            decisions["updated_at"] = _now_iso()
             _write_json(decisions_path, decisions)
         self._serve_json({"ok": True, "decisions": decisions})
 
@@ -390,7 +897,7 @@ def _write_lock(pid: int, port: int) -> None:
         "port": port,
         "plugin_root": str(PLUGIN_ROOT),
         "data_dir": str(DATA_DIR),
-        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "started_at": _now_iso(),
     }, indent=2), encoding="utf-8")
 
 
@@ -435,7 +942,6 @@ def _spawn_detached_daemon() -> tuple[int, int]:
         os.path.abspath(__file__),
         "--http-daemon",
         "--plugin-root", str(PLUGIN_ROOT),
-        "--data-dir", str(DATA_DIR),
         "--port", str(port),
     ]
     # Fully detach: new session, stdin/out/err to /dev/null.
@@ -528,6 +1034,7 @@ def run_http_daemon(port: int) -> None:
     """
     global HTTP_SERVER, HTTP_PORT
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    SITES_DIR.mkdir(parents=True, exist_ok=True)
     HTTP_SERVER = ReusableTCPServer(("127.0.0.1", port), DashboardRequestHandler)
     HTTP_PORT = port
     _write_lock(os.getpid(), port)
@@ -565,45 +1072,37 @@ def run_http_daemon(port: int) -> None:
 MCP_TOOLS = [
     {
         "name": "open_dashboard",
-        "description": "Start the local dashboard HTTP server (if not running) and open the user's default browser to it. Call this at the start of every pipeline run. Returns the URL.",
+        "description": "Start the local dashboard HTTP server (if not running) and open the user's default browser to a specific run dashboard. Requires a concrete run_id.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "run_id": {"type": "string", "description": "Optional run id; dashboard will land on this run's view."},
+                "run_id": {"type": "string", "description": "Run id to open."},
                 "open_browser": {"type": "boolean", "description": "Whether to auto-open the browser. Default true.", "default": True},
             },
+            "required": ["run_id"],
         },
     },
     {
         "name": "get_dashboard_url",
-        "description": "Return the URL of the dashboard HTTP server, starting it if necessary.",
+        "description": "Return the home URL of the dashboard HTTP server, starting it if necessary.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "register_run",
-        "description": "Initialise a new run directory at {data_dir}/runs/{run_id}/. Creates state.json and all sub-directories (articles/, recommendations/, optimised/, media/, raw/, gaps/, competitors/, peec-cache/). Returns run_id, absolute run path, data_dir, and brands_dir — USE THESE absolute paths in all subsequent sub-agent file operations. The plugin install dir is read-only; all writes must go under data_dir (defaults to ~/.ai-search-blog-optimiser/).",
+        "description": "Initialise a new run directory at {data_dir}/runs/{run_id}/. Creates state.json, outputs/ sub-directories, decisions.json, and gates.json. Returns all absolute paths needed by the orchestrator plus the site-scoped voice baseline metadata.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "blog_url": {"type": "string"},
-                "brand_name": {"type": "string"},
                 "peec_project_id": {"type": "string"},
-                "role": {"type": "string", "enum": ["own", "competitor", "unknown"]},
+                "refresh_voice": {"type": "boolean", "default": False},
             },
             "required": ["blog_url"],
         },
     },
     {
-        "name": "get_paths",
-        "description": "Return the absolute data_dir, brands_dir, and — if run_id is provided — the run_dir, articles_dir, recommendations_dir, optimised_dir, media_dir, raw_dir, gaps_dir, competitors_dir, peec_cache_dir, state_json, decisions_json, gates_json, run_summary_md. Use this at the start of the slash command to resolve every path you'll pass to sub-agents — never hard-code relative paths.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"run_id": {"type": "string"}},
-        },
-    },
-    {
         "name": "set_gate",
-        "description": "Write/update a gate in gates.json for the run. Used by the main session to pause the pipeline for human review. status='pending' opens the gate (dashboard shows Continue button); status='resolved' closes it (auto-proceed used internally when timeout).",
+        "description": "Write/update a gate in gates.json for the run. Used by the main session to pause the pipeline for human review. status='pending' opens the gate (dashboard shows Continue button); status='resolved' closes it. Gate timeout is enforced server-side when get_gates or the dashboard reads the gate.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -611,6 +1110,7 @@ MCP_TOOLS = [
                 "gate": {"type": "string", "description": "e.g. 'crawl_gate', 'voice_gate', 'recommend_gate'"},
                 "status": {"type": "string", "enum": ["pending", "resolved"]},
                 "prompt": {"type": "string", "description": "Message shown to user in dashboard when gate is pending"},
+                "timeout_seconds": {"type": "integer", "description": "Optional. Defaults to 300 seconds for pending gates.", "default": 300},
                 "user_action": {"type": "string", "description": "Only when status=resolved; usually 'proceed'"},
             },
             "required": ["run_id", "gate", "status"],
@@ -618,7 +1118,7 @@ MCP_TOOLS = [
     },
     {
         "name": "get_gates",
-        "description": "Return current gates.json for a run. Main session polls this while waiting for the user's Continue click in the dashboard.",
+        "description": "Return current gates.json for a run. Pending gates are auto-resolved server-side when their timeout expires; callers should trust the returned status and never infer timeout themselves.",
         "inputSchema": {
             "type": "object",
             "properties": {"run_id": {"type": "string"}},
@@ -635,6 +1135,102 @@ MCP_TOOLS = [
                 "fragment": {"type": "object"},
             },
             "required": ["run_id", "fragment"],
+        },
+    },
+    {
+        "name": "get_artifact_path",
+        "description": "Resolve a safe absolute host path for a run artifact namespace. Use this when another MCP tool needs an output_path on the host machine.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "namespace": {"type": "string", "enum": ARTIFACT_NAMESPACES},
+                "relative_path": {"type": "string"},
+            },
+            "required": ["run_id", "namespace", "relative_path"],
+        },
+    },
+    {
+        "name": "list_artifacts",
+        "description": "List files already written under a run artifact namespace or the site namespace for that run.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "namespace": {"type": "string", "enum": ARTIFACT_NAMESPACES},
+                "suffix": {"type": "string", "description": "Optional filename suffix filter such as .json or .md"},
+                "limit": {"type": "integer", "default": 200},
+            },
+            "required": ["run_id", "namespace"],
+        },
+    },
+    {
+        "name": "read_text_artifact",
+        "description": "Read a UTF-8 text artifact from a run or site namespace on the host machine.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "namespace": {"type": "string", "enum": ARTIFACT_NAMESPACES},
+                "relative_path": {"type": "string"},
+                "max_chars": {"type": "integer", "default": 200000},
+            },
+            "required": ["run_id", "namespace", "relative_path"],
+        },
+    },
+    {
+        "name": "read_json_artifact",
+        "description": "Read and parse a JSON artifact from a run or site namespace on the host machine.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "namespace": {"type": "string", "enum": ARTIFACT_NAMESPACES},
+                "relative_path": {"type": "string"},
+            },
+            "required": ["run_id", "namespace", "relative_path"],
+        },
+    },
+    {
+        "name": "write_text_artifact",
+        "description": "Write a UTF-8 text artifact into a run or site namespace on the host machine. Use this instead of Bash/Write for host-side run files.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "namespace": {"type": "string", "enum": ["run", "site", "optimised", "raw"]},
+                "relative_path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["run_id", "namespace", "relative_path", "content"],
+        },
+    },
+    {
+        "name": "write_json_artifact",
+        "description": "Write a JSON artifact into a run or site namespace on the host machine. Use this instead of Bash/Write for host-side run files.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "namespace": {"type": "string", "enum": ["site", "articles", "recommendations", "optimised", "gaps", "competitors", "peec_cache"]},
+                "relative_path": {"type": "string"},
+                "data": {"type": "object"},
+            },
+            "required": ["run_id", "namespace", "relative_path", "data"],
+        },
+    },
+    {
+        "name": "download_media_asset",
+        "description": "Download a remote media URL into the run's media namespace on the host machine.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "source_url": {"type": "string"},
+                "relative_path": {"type": "string"},
+                "timeout_seconds": {"type": "integer", "default": 15},
+            },
+            "required": ["run_id", "source_url", "relative_path"],
         },
     },
     {
@@ -697,12 +1293,83 @@ def _deep_merge(dst: dict, src: dict) -> dict:
     return dst
 
 
+def _normalize_status_values(node: Any) -> None:
+    if isinstance(node, dict):
+        for key, value in list(node.items()):
+            if key == "status" and isinstance(value, str) and value == "complete":
+                node[key] = "completed"
+            else:
+                _normalize_status_values(value)
+    elif isinstance(node, list):
+        for item in node:
+            _normalize_status_values(item)
+
+
+def _merge_article_fragments(fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for fragment in fragments:
+        if not isinstance(fragment, dict):
+            continue
+        slug = fragment.get("slug")
+        if not isinstance(slug, str) or not slug:
+            continue
+        if slug in merged:
+            _deep_merge(merged[slug], fragment)
+        else:
+            merged[slug] = fragment
+            order.append(slug)
+    return [merged[slug] for slug in order]
+
+
+def _normalize_state_fragment(fragment: Any) -> Any:
+    if not isinstance(fragment, dict):
+        return fragment
+
+    normalized = dict(fragment)
+    article_fragments: list[dict[str, Any]] = []
+
+    incoming_articles = normalized.get("articles")
+    if isinstance(incoming_articles, list):
+        article_fragments.extend(item for item in incoming_articles if isinstance(item, dict))
+    elif isinstance(incoming_articles, dict):
+        for slug, article_data in incoming_articles.items():
+            if not isinstance(article_data, dict):
+                continue
+            article_fragment = {"slug": slug}
+            article_fragment.update(article_data)
+            article_fragments.append(article_fragment)
+
+    incoming_stage_map = normalized.pop("stages", None)
+    if isinstance(incoming_stage_map, dict):
+        for stage_name, per_article in incoming_stage_map.items():
+            if not isinstance(per_article, dict):
+                continue
+            for slug, stage_payload in per_article.items():
+                if not isinstance(stage_payload, dict):
+                    continue
+                article_fragments.append({
+                    "slug": slug,
+                    "stages": {
+                        stage_name: stage_payload,
+                    },
+                })
+
+    if article_fragments:
+        normalized["articles"] = _merge_article_fragments(article_fragments)
+
+    _normalize_status_values(normalized)
+    return normalized
+
+
 def _tool_open_dashboard(args: dict) -> dict:
-    port = start_http_server()
-    url = f"http://127.0.0.1:{port}/"
     run_id = args.get("run_id")
-    if run_id:
-        url = f"http://127.0.0.1:{port}/runs/{run_id}/"
+    if not run_id:
+        raise ValueError("run_id is required for open_dashboard")
+    if not (RUNS_DIR / run_id).exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    port = start_http_server()
+    url = f"http://127.0.0.1:{port}/runs/{run_id}/"
     if args.get("open_browser", True):
         try:
             webbrowser.open(url)
@@ -717,47 +1384,98 @@ def _tool_get_dashboard_url(_args: dict) -> dict:
 
 
 def _tool_register_run(args: dict) -> dict:
-    run_id = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
+    blog_url = args["blog_url"]
+    canonical_blog_url = _canonicalize_blog_url(blog_url)
+    site_key = _site_key_from_blog_url(canonical_blog_url)
+    refresh_voice = bool(args.get("refresh_voice", False))
+    run_id = _next_run_id()
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    for sub in ("articles", "recommendations", "optimised", "media", "raw", "gaps", "competitors", "peec-cache"):
-        (run_dir / sub).mkdir(parents=True, exist_ok=True)
-    # Ensure the brands dir is ready for the voice-extractor.
-    BRANDS_DIR.mkdir(parents=True, exist_ok=True)
+    output_paths = _output_paths(run_dir)
+    for path in output_paths.values():
+        path.mkdir(parents=True, exist_ok=True)
+    SITES_DIR.mkdir(parents=True, exist_ok=True)
+    port = start_http_server()
+    dashboard_url = f"http://127.0.0.1:{port}/runs/{run_id}/"
+    voice_baseline = _read_voice_baseline(site_key, refresh_voice)
+    site_paths = _site_paths(site_key)
+    voice_mode = "reused" if voice_baseline["will_reuse"] else "pending"
+    run_paths = _build_run_paths(run_dir)
+    run_paths.update({
+        "site_dir": str(site_paths["site_dir"]),
+        "voice_markdown_path": str(site_paths["voice_markdown_path"]),
+        "voice_meta_path": str(site_paths["voice_meta_path"]),
+    })
     initial_state = {
         "run_id": run_id,
-        "blog_url": args.get("blog_url"),
-        "brand": {
-            "name": args.get("brand_name"),
-            "peec_project_id": args.get("peec_project_id"),
-            "role": args.get("role", "unknown"),
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
+        "status": "running",
+        "blog_url": blog_url,
+        "canonical_blog_url": canonical_blog_url,
+        "site_key": site_key,
+        "dashboard_url": dashboard_url,
+        "peec_project": {
+            "id": args.get("peec_project_id"),
+            "mode": "peec" if args.get("peec_project_id") else "generic",
         },
-        "paths": {
-            "data_dir": str(DATA_DIR),
-            "run_dir": str(run_dir),
-            "brands_dir": str(BRANDS_DIR),
+        "session": {"mode": "fresh", "launched_at": _now_iso()},
+        "voice_baseline": voice_baseline,
+        "voice": {
+            "mode": voice_mode,
+            "source_run_id": voice_baseline.get("source_run_id") if voice_baseline["will_reuse"] else None,
+            "updated_at": voice_baseline.get("updated_at") if voice_baseline["will_reuse"] else None,
+            "summary": voice_baseline.get("summary") if voice_baseline["will_reuse"] else None,
+            "markdown_path": voice_baseline["markdown_path"],
+            "meta_path": voice_baseline["meta_path"],
         },
+        "outputs": run_paths,
         "pipeline": {
+            "prereqs": {"status": "completed", "detail": "Validated before run bootstrap"},
             "crawl": {"status": "pending"},
-            "voice": {"status": "pending"},
-            "recommend": {"status": "pending"},
-            "generate": {"status": "pending"},
+            "voice": {
+                "status": "completed" if voice_baseline["will_reuse"] else "pending",
+                "detail": (
+                    f"Reused brand voice from {voice_baseline['updated_at']}"
+                    if voice_baseline["will_reuse"] and voice_baseline.get("updated_at")
+                    else ("Reused existing brand voice baseline" if voice_baseline["will_reuse"] else "")
+                ),
+            },
+            "analysis": {"status": "pending"},
+            "recommendations": {"status": "pending"},
+            "draft": {"status": "pending"},
         },
         "articles": [],
-        "banners": [],
-        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "banners": (
+            [{
+                "severity": "info",
+                "message": f"Reusing saved brand voice baseline for {site_key}. Use --refresh-voice to rebuild it.",
+                "at": _now_iso(),
+            }]
+            if voice_baseline["will_reuse"]
+            else []
+        ),
     }
     _write_json(run_dir / "state.json", initial_state)
     # Seed empty gates.json and decisions.json so agents and dashboard can read them without 404s.
     _write_json(run_dir / "gates.json", {})
     _write_json(run_dir / "decisions.json", {"articles": {}})
-    return {"run_id": run_id, "path": str(run_dir), "data_dir": str(DATA_DIR), "brands_dir": str(BRANDS_DIR)}
+    response = {
+        "run_id": run_id,
+        "dashboard_url": dashboard_url,
+        "data_dir": str(DATA_DIR),
+        "state_path": str(run_dir / "state.json"),
+        "site_key": site_key,
+        "canonical_blog_url": canonical_blog_url,
+        "voice_baseline": voice_baseline,
+    }
+    response.update(run_paths)
+    return response
 
 
 def _tool_update_state(args: dict) -> dict:
     run_id = args["run_id"]
-    fragment = args["fragment"]
+    fragment = _normalize_state_fragment(args["fragment"])
     run_dir = RUNS_DIR / run_id
     if not run_dir.exists():
         raise ValueError(f"Run {run_id} does not exist")
@@ -765,9 +1483,145 @@ def _tool_update_state(args: dict) -> dict:
     with STATE_LOCK:
         state = _read_json(state_path) or {}
         _deep_merge(state, fragment)
-        state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _refresh_pipeline_aggregates(state)
+        state["updated_at"] = _now_iso()
         _write_json(state_path, state)
     return {"ok": True}
+
+
+def _tool_get_artifact_path(args: dict) -> dict:
+    run_id = args["run_id"]
+    namespace = args["namespace"]
+    relative_path = args["relative_path"]
+    _, target = _resolve_artifact_path(run_id, namespace, relative_path)
+    return {
+        "run_id": run_id,
+        "namespace": namespace,
+        "relative_path": relative_path,
+        "absolute_path": str(target),
+    }
+
+
+def _tool_list_artifacts(args: dict) -> dict:
+    run_id = args["run_id"]
+    namespace = args["namespace"]
+    suffix = args.get("suffix")
+    limit = max(1, min(int(args.get("limit", 200)), 1000))
+    base_dir = _artifact_base_dir(run_id, namespace)
+    if not base_dir.exists():
+        return {"run_id": run_id, "namespace": namespace, "artifacts": []}
+    artifacts: list[dict[str, Any]] = []
+    for target in sorted(base_dir.rglob("*")):
+        if not target.is_file():
+            continue
+        relative_path = target.relative_to(base_dir).as_posix()
+        if suffix and not relative_path.endswith(suffix):
+            continue
+        artifacts.append({
+            "relative_path": relative_path,
+            "absolute_path": str(target),
+            "size_bytes": target.stat().st_size,
+        })
+        if len(artifacts) >= limit:
+            break
+    return {"run_id": run_id, "namespace": namespace, "artifacts": artifacts}
+
+
+def _tool_read_text_artifact(args: dict) -> dict:
+    run_id = args["run_id"]
+    namespace = args["namespace"]
+    relative_path = args["relative_path"]
+    max_chars = max(1, min(int(args.get("max_chars", 200000)), 2_000_000))
+    _, target = _resolve_artifact_path(run_id, namespace, relative_path)
+    if not target.exists() or not target.is_file():
+        raise ValueError(f"Artifact not found: {namespace}/{relative_path}")
+    content = target.read_text(encoding="utf-8")
+    truncated = len(content) > max_chars
+    if truncated:
+        content = content[:max_chars]
+    return {
+        "run_id": run_id,
+        "namespace": namespace,
+        "relative_path": relative_path,
+        "absolute_path": str(target),
+        "content": content,
+        "truncated": truncated,
+    }
+
+
+def _tool_read_json_artifact(args: dict) -> dict:
+    run_id = args["run_id"]
+    namespace = args["namespace"]
+    relative_path = args["relative_path"]
+    _, target = _resolve_artifact_path(run_id, namespace, relative_path)
+    data = _read_json(target)
+    if data is None:
+        raise ValueError(f"JSON artifact not found or invalid: {namespace}/{relative_path}")
+    return {
+        "run_id": run_id,
+        "namespace": namespace,
+        "relative_path": relative_path,
+        "absolute_path": str(target),
+        "data": data,
+    }
+
+
+def _tool_write_text_artifact(args: dict) -> dict:
+    run_id = args["run_id"]
+    namespace = args["namespace"]
+    relative_path = args["relative_path"]
+    content = args["content"]
+    _validate_text_write(namespace, relative_path)
+    _, target = _resolve_artifact_path(run_id, namespace, relative_path)
+    _atomic_write(target, content)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "namespace": namespace,
+        "relative_path": relative_path,
+        "absolute_path": str(target),
+        "size_bytes": len(content.encode("utf-8")),
+    }
+
+
+def _tool_write_json_artifact(args: dict) -> dict:
+    run_id = args["run_id"]
+    namespace = args["namespace"]
+    relative_path = args["relative_path"]
+    data = args["data"]
+    _validate_json_write(namespace, relative_path)
+    _, target = _resolve_artifact_path(run_id, namespace, relative_path)
+    _write_json(target, data)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "namespace": namespace,
+        "relative_path": relative_path,
+        "absolute_path": str(target),
+    }
+
+
+def _tool_download_media_asset(args: dict) -> dict:
+    run_id = args["run_id"]
+    source_url = args["source_url"]
+    relative_path = args["relative_path"]
+    timeout_seconds = max(1, min(int(args.get("timeout_seconds", 15)), 60))
+    _, target = _resolve_artifact_path(run_id, "media", relative_path)
+    request = urllib.request.Request(source_url, headers={
+        "User-Agent": "Mozilla/5.0 (compatible; AI Search Blog Optimiser/0.3.1)"
+    })
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        payload = response.read()
+    _atomic_write_bytes(target, payload)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "namespace": "media",
+        "relative_path": relative_path,
+        "absolute_path": str(target),
+        "size_bytes": len(payload),
+        "source_url": source_url,
+    }
 
 
 def _tool_list_runs(_args: dict) -> dict:
@@ -795,43 +1649,11 @@ def _tool_show_banner(args: dict) -> dict:
             "message": args["message"],
             "action_url": args.get("action_url"),
             "action_label": args.get("action_label"),
-            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "at": _now_iso(),
         })
-        state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        state["updated_at"] = _now_iso()
         _write_json(state_path, state)
     return {"ok": True}
-
-
-def _tool_get_paths(args: dict) -> dict:
-    run_id = args.get("run_id")
-    paths = {
-        "data_dir": str(DATA_DIR),
-        "runs_dir": str(RUNS_DIR),
-        "brands_dir": str(BRANDS_DIR),
-        "dashboard_dir": str(DASHBOARD_DIR),
-        "plugin_root": str(PLUGIN_ROOT),
-        "lock_file": str(LOCK_FILE),
-    }
-    if run_id:
-        run_dir = RUNS_DIR / run_id
-        if run_dir.exists():
-            paths["run_dir"] = str(run_dir)
-            paths["articles_dir"] = str(run_dir / "articles")
-            paths["recommendations_dir"] = str(run_dir / "recommendations")
-            paths["optimised_dir"] = str(run_dir / "optimised")
-            paths["media_dir"] = str(run_dir / "media")
-            paths["raw_dir"] = str(run_dir / "raw")
-            paths["gaps_dir"] = str(run_dir / "gaps")
-            paths["competitors_dir"] = str(run_dir / "competitors")
-            paths["peec_cache_dir"] = str(run_dir / "peec-cache")
-            paths["state_json"] = str(run_dir / "state.json")
-            paths["decisions_json"] = str(run_dir / "decisions.json")
-            paths["gates_json"] = str(run_dir / "gates.json")
-            paths["run_summary_md"] = str(run_dir / "run-summary.md")
-        else:
-            paths["run_dir"] = None
-            paths["error"] = f"Run {run_id} does not exist"
-    return paths
 
 
 def _tool_set_gate(args: dict) -> dict:
@@ -849,12 +1671,17 @@ def _tool_set_gate(args: dict) -> dict:
         gate["status"] = status
         gate["prompt"] = args.get("prompt", gate.get("prompt", ""))
         if status == "pending":
-            gate["pending_since"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            timeout_seconds = _normalize_timeout_seconds(args.get("timeout_seconds"))
+            gate["pending_since"] = _now_iso()
             gate["resolved_at"] = None
             gate["user_action"] = None
+            gate["timeout_seconds"] = timeout_seconds
+            pending_since = _parse_iso(gate["pending_since"]) or datetime.utcnow()
+            gate["expires_at"] = (pending_since + timedelta(seconds=timeout_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
         elif status == "resolved":
-            gate["resolved_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            gate["resolved_at"] = _now_iso()
             gate["user_action"] = args.get("user_action", "proceed")
+            gate["timeout_seconds"] = _normalize_timeout_seconds(gate.get("timeout_seconds"))
         _write_json(gates_path, gates)
     return {"ok": True, "gate": gate}
 
@@ -862,7 +1689,7 @@ def _tool_set_gate(args: dict) -> dict:
 def _tool_get_gates(args: dict) -> dict:
     run_id = args["run_id"]
     run_dir = RUNS_DIR / run_id
-    gates = _read_json(run_dir / "gates.json") or {}
+    gates = _hydrate_gates(run_dir)
     return gates
 
 
@@ -871,10 +1698,16 @@ TOOL_DISPATCH = {
     "get_dashboard_url": _tool_get_dashboard_url,
     "register_run": _tool_register_run,
     "update_state": _tool_update_state,
+    "get_artifact_path": _tool_get_artifact_path,
+    "list_artifacts": _tool_list_artifacts,
+    "read_text_artifact": _tool_read_text_artifact,
+    "read_json_artifact": _tool_read_json_artifact,
+    "write_text_artifact": _tool_write_text_artifact,
+    "write_json_artifact": _tool_write_json_artifact,
+    "download_media_asset": _tool_download_media_asset,
     "list_runs": _tool_list_runs,
     "get_decisions": _tool_get_decisions,
     "show_banner": _tool_show_banner,
-    "get_paths": _tool_get_paths,
     "set_gate": _tool_set_gate,
     "get_gates": _tool_get_gates,
 }
@@ -911,7 +1744,7 @@ def _mcp_loop() -> None:
                 result = {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "blog-optimiser-dashboard", "version": "0.1.0"},
+                    "serverInfo": {"name": "blog-optimiser-dashboard", "version": VERSION},
                 }
                 _send(_mcp_response(msg_id, result))
                 initialised = True
@@ -964,16 +1797,13 @@ def _send(msg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    global PLUGIN_ROOT, RUNS_DIR, BRANDS_DIR, DATA_DIR, DASHBOARD_DIR, LOCK_FILE, HTTP_SERVER, HTTP_PORT
+    global PLUGIN_ROOT, RUNS_DIR, SITES_DIR, DATA_DIR, DASHBOARD_DIR, LOCK_FILE, HTTP_SERVER, HTTP_PORT
 
     parser = argparse.ArgumentParser(description="AI Search Blog Optimiser dashboard server")
     parser.add_argument("--plugin-root", type=str, default=str(PLUGIN_ROOT),
                         help="Absolute path to the plugin root (defaults to CLAUDE_PLUGIN_ROOT env). Read-only in Cowork sandbox — assets only.")
-    parser.add_argument("--data-dir", type=str,
-                        default=os.environ.get("AI_SEARCH_BLOG_OPTIMISER_DATA", str(Path.home() / ".ai-search-blog-optimiser")),
-                        help="Writable data directory for runs/ and brands/ (default: ~/.ai-search-blog-optimiser/).")
     parser.add_argument("--http-only", action="store_true",
-                        help="Dev/QA: HTTP only, no MCP, runs in foreground (old v0.1 behaviour).")
+                        help="Dev/QA: HTTP only, no MCP, runs in foreground.")
     parser.add_argument("--http-daemon", action="store_true",
                         help="Long-lived detached HTTP daemon. Spawned by the MCP via --http-daemon. Writes dashboard.lock. Does NOT do MCP stdio.")
     parser.add_argument("--stop-dashboard", action="store_true",
@@ -984,22 +1814,22 @@ def main() -> None:
 
     PLUGIN_ROOT = Path(args.plugin_root).resolve()
     DASHBOARD_DIR = PLUGIN_ROOT / "dashboard"
-    DATA_DIR = Path(args.data_dir).expanduser().resolve()
+    DATA_DIR = _resolve_data_dir()
     RUNS_DIR = DATA_DIR / "runs"
-    BRANDS_DIR = DATA_DIR / "brands"
+    SITES_DIR = DATA_DIR / "sites"
     LOCK_FILE = DATA_DIR / "dashboard.lock"
 
     # Verify writability up-front.
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
-        BRANDS_DIR.mkdir(parents=True, exist_ok=True)
+        SITES_DIR.mkdir(parents=True, exist_ok=True)
         probe = DATA_DIR / ".writable-probe"
         probe.write_text("ok")
         probe.unlink()
     except OSError as e:
         _log(f"FATAL: data dir {DATA_DIR} is not writable: {e}")
-        _log("Set --data-dir or AI_SEARCH_BLOG_OPTIMISER_DATA to a writable path.")
+        _log("Set BLOG_OPTIMISER_DATA_ROOT to a writable path.")
         sys.exit(2)
 
     if args.stop_dashboard:

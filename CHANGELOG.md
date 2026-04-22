@@ -2,6 +2,36 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.3.1] — 2026-04-22
+
+Runtime fix focused on Cowork sandbox correctness during the crawl and downstream leaf-agent stages.
+
+### Fixed
+- Added host-side artifact read/write tools to the local dashboard MCP so leaf agents no longer try to persist run files through sandboxed `/Users/...` paths.
+- Replaced the broken crawler persistence contract that was falling back to `~/mnt/outputs` inside Cowork workers.
+- Tightened the crawler prompt to discover article URLs only from real hrefs and canonical URLs, not title-inferred slugs.
+- Added a fixed article fetch order of `md raw -> html -> execute_js` for JS-heavy blogs such as Granola.
+- Updated voice, gap, competitor, recommendation, and generator agents to use MCP-backed storage instead of direct host-path reads and writes.
+- Added a post-crawl invariant in the main playbook: if the real `articles` namespace is empty, the pipeline fails instead of continuing with stale or missing data.
+
+## [0.3.0] — 2026-04-22
+
+Clean-break release focused on fresh-run correctness.
+
+### Changed
+- Fresh runs now register first and open the browser second. `open_dashboard` requires `run_id`.
+- Dashboard home page is now neutral history. `/` no longer redirects to the latest run.
+- Local storage moved to a new versioned root under `ai-search-blog-optimiser/v3`.
+- Run outputs now live under `runs/{run_id}/outputs/`.
+- Voice reuse is site-scoped under `sites/{site_key}/`, not Peec-project-scoped.
+- `register_run` now returns the full absolute path set needed by orchestration. `get_paths` is no longer part of the normal flow.
+- Pipeline contract now uses strict stage names: `prereqs`, `crawl`, `voice`, `analysis`, `recommendations`, `draft`.
+
+### Fixed
+- Stale historical dashboards no longer appear when starting a new run.
+- Stage 0 no longer uses `mcp__c4ai-sse__ask` as a Crawl4AI healthcheck.
+- Same-site voice reuse is now explicit and visible in state and dashboard UI.
+
 ## [0.2.0] — 2026-04-21
 
 Major architectural refactor after live-run feedback. The pipeline now actually delivers the human-in-the-loop dashboard experience that was broken in v0.1.

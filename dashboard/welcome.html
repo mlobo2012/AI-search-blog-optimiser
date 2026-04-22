@@ -25,58 +25,123 @@ tailwind.config = {
 </script>
 </head>
 <body class="bg-white text-[#0A0A0A] font-sans antialiased min-h-screen flex flex-col">
-
 <header class="border-b border-gray-200 bg-white">
-  <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+  <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
     <div class="flex items-center gap-3">
       <img src="/static/assets/img/ai-heroes-logo.svg" alt="AI Heroes" class="h-7" onerror="this.style.display='none'" />
       <span class="hidden sm:inline text-gray-300 text-xl">/</span>
       <h1 class="font-heading text-lg tracking-tight">Blog Optimiser</h1>
     </div>
-    <div class="text-sm text-gray-500 italic">no active run</div>
+    <a href="#history" class="text-sm underline hover:text-accent-dark">View history</a>
   </div>
 </header>
 
-<main class="flex-1 flex items-center justify-center">
-  <div class="max-w-xl text-center px-6 py-16">
-    <img src="/static/assets/img/ai-heroes-icon.svg" alt="" class="h-12 mx-auto mb-6 opacity-80" onerror="this.style.display='none'" />
-    <h2 class="font-heading text-3xl mb-3">Welcome to Blog Optimiser</h2>
-    <p class="text-gray-600 mb-8 leading-relaxed">
-      In Claude Desktop, run:
-    </p>
-    <pre class="bg-surface-light rounded-lg p-4 text-sm text-left font-mono mb-8 overflow-x-auto"><code>/blog-optimiser https://your-blog.com/blog</code></pre>
-    <p class="text-gray-600 mb-8 leading-relaxed text-sm">
-      Your live progress, recommendations, and optimised articles will appear here automatically.
-    </p>
-    <div class="text-left bg-surface-light rounded-lg p-5 text-sm text-gray-700">
-      <p class="font-medium mb-2">Prerequisites (connected in Claude Desktop's MCP settings)</p>
-      <ul class="space-y-1.5 text-gray-600">
-        <li>• <strong>Peec AI MCP</strong> — for live gap data (<a href="https://peec.ai" class="underline hover:text-accent-dark" target="_blank" rel="noopener">peec.ai</a>)</li>
-        <li>• <strong>Crawl4AI MCP</strong> — for page fetching and extraction</li>
-        <li>• <strong>Python 3.8+</strong> — macOS bundles this; otherwise install from <a href="https://python.org" class="underline hover:text-accent-dark" target="_blank" rel="noopener">python.org</a></li>
-      </ul>
+<main class="flex-1">
+  <section class="border-b border-gray-200 bg-surface-light">
+    <div class="max-w-6xl mx-auto px-6 py-16 grid gap-10 lg:grid-cols-[1.2fr,0.8fr] items-start">
+      <div>
+        <p class="text-xs uppercase tracking-[0.25em] text-accent-dark mb-3">Fresh-run only</p>
+        <h2 class="font-heading text-4xl md:text-5xl leading-tight mb-4">Start a new blog optimiser run from Claude Cowork.</h2>
+        <p class="text-gray-600 text-lg leading-relaxed mb-8">
+          New runs only open after a concrete <code class="font-mono bg-white px-2 py-0.5 rounded text-sm">run_id</code> exists.
+          This page is history and instructions only. It never auto-loads prior run data.
+        </p>
+        <div class="bg-white border border-gray-200 rounded-xl p-5">
+          <p class="text-sm text-gray-500 mb-2">Run this in Claude Cowork:</p>
+          <pre class="font-mono text-sm overflow-x-auto"><code>/blog-optimiser https://your-blog.com/blog</code></pre>
+        </div>
+      </div>
+
+      <div class="bg-white border border-gray-200 rounded-2xl p-6">
+        <h3 class="font-heading text-2xl mb-4">How it works now</h3>
+        <ul class="space-y-3 text-sm text-gray-700">
+          <li>Prereqs are validated first with bounded tool output.</li>
+          <li>The run is registered before any dashboard tab opens.</li>
+          <li>History is explicit. Nothing redirects to the latest run.</li>
+          <li>Brand voice is reused only for the same site, or rebuilt with <code class="font-mono">--refresh-voice</code>.</li>
+        </ul>
+      </div>
     </div>
-    <p class="mt-8 text-xs text-gray-400">
-      The plugin runs in "generic mode" if Peec isn't connected — recommendations are still produced using GEO best-practice rules and any competitor URLs you supply.
-    </p>
-  </div>
+  </section>
+
+  <section id="history" class="max-w-6xl mx-auto px-6 py-12">
+    <div class="flex items-center justify-between gap-4 mb-6">
+      <div>
+        <p class="text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">History</p>
+        <h3 class="font-heading text-3xl">Existing runs</h3>
+      </div>
+      <button id="refresh-history" class="px-3 py-1.5 rounded border border-gray-200 text-sm hover:border-accent hover:text-accent-dark">
+        Refresh
+      </button>
+    </div>
+
+    <div id="history-empty" class="hidden rounded-xl border border-gray-200 bg-surface-light px-5 py-10 text-center text-sm text-gray-500">
+      No runs have been registered yet.
+    </div>
+
+    <div id="history-list" class="grid gap-4"></div>
+  </section>
 </main>
 
 <footer class="border-t border-gray-200 py-4 text-center text-xs text-gray-400">
   Powered by
   <a href="https://aiheroes.site" target="_blank" rel="noopener" class="underline hover:text-accent-dark">AI Heroes</a>
-  ·
-  <a href="https://peec.ai" target="_blank" rel="noopener" class="underline hover:text-accent-dark">Peec AI</a>
 </footer>
 
 <script>
-// Poll for a newly-registered run and jump into the dashboard when one appears.
-setInterval(async () => {
+function formatDate(value) {
+  if (!value) return 'unknown';
+  return value.replace('T', ' ').replace('Z', ' UTC');
+}
+
+function renderHistory(runs) {
+  const list = document.getElementById('history-list');
+  const empty = document.getElementById('history-empty');
+  list.innerHTML = '';
+  if (!runs.length) {
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  runs.forEach((run) => {
+    const state = run.state || {};
+    const voiceMode = state.voice?.mode === 'reused' ? 'voice reused' : 'voice fresh';
+    const status = state.status || 'running';
+    const siteKey = state.site_key || 'unknown site';
+    const articleCount = (state.articles || []).length;
+    const anchor = document.createElement('a');
+    anchor.href = `/runs/${run.run_id}/`;
+    anchor.className = 'block rounded-2xl border border-gray-200 bg-white px-5 py-4 hover:border-accent hover:shadow-sm transition';
+    anchor.innerHTML = `
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div class="text-xs uppercase tracking-[0.2em] text-gray-400 mb-1">${run.run_id}</div>
+          <div class="font-medium text-gray-900">${siteKey}</div>
+          <div class="text-sm text-gray-500 mt-1">${articleCount} articles · ${voiceMode}</div>
+        </div>
+        <div class="text-right">
+          <div class="text-sm font-medium text-gray-700">${status}</div>
+          <div class="text-xs text-gray-500 mt-1">${formatDate(state.updated_at || state.created_at)}</div>
+        </div>
+      </div>
+    `;
+    list.appendChild(anchor);
+  });
+}
+
+async function loadHistory() {
   try {
-    const r = await fetch('/api/runs').then(r => r.json());
-    if (r.length) window.location.href = `/runs/${r[0].run_id}/`;
-  } catch (_) {}
-}, 2000);
+    const response = await fetch('/api/runs');
+    const runs = await response.json();
+    renderHistory(runs);
+  } catch (_) {
+    const list = document.getElementById('history-list');
+    list.innerHTML = '<div class="rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-800">Failed to load run history from the local dashboard server.</div>';
+  }
+}
+
+document.getElementById('refresh-history').addEventListener('click', loadHistory);
+loadHistory();
 </script>
 </body>
 </html>

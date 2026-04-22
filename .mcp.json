@@ -5,9 +5,7 @@
       "args": [
         "${CLAUDE_PLUGIN_ROOT}/dashboard/server.py",
         "--plugin-root",
-        "${CLAUDE_PLUGIN_ROOT}",
-        "--data-dir",
-        "${HOME}/.ai-search-blog-optimiser"
+        "${CLAUDE_PLUGIN_ROOT}"
       ]
     }
   }
