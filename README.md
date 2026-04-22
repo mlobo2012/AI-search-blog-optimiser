@@ -1,197 +1,364 @@
 # AI Search Blog Optimiser
 
-A Claude Desktop plugin that rewrites your blog's long tail for **AI search citation** — grounded in your own Peec AI gap data, the competitors AI engines are actually citing for your prompts this week, and the latest evidence-backed GEO best practices.
+A Claude Cowork desktop plugin that rewrites your blog's long tail for **AI-search citation** — grounded in your own live Peec AI gap data, the competitor URLs AI engines are actually citing for your prompts this week, and evidence-backed GEO best practices.
 
-Point it at any blog URL. Get back optimised article drafts with a full evidence trail, ready for your content team.
+Point it at any blog URL. Get back optimised article drafts with a full evidence trail, rendered in a live local dashboard and exported to disk for your content team.
 
-**Built by [AI Heroes](https://aiheroes.site). Powered by the [Peec AI MCP](https://peec.ai) Challenge stack.**
-
----
-
-## What it does
-
-```
-/blog-optimiser https://www.your-blog.com/blog
-```
-
-The plugin opens a live local dashboard in your browser and runs a 4-agent pipeline across every article on the blog:
-
-1. **Crawls** every article via Crawl4AI — full HTML, images (downloaded locally), tables, schema, author block, link graph, CTAs.
-2. **Extracts your brand voice** into a persistent, editable artefact (namespaced per Peec project so competitor runs never contaminate your own profile).
-3. **Reads your Peec gap** — matched prompts, brand visibility per engine, competitor URLs currently being cited where you aren't, and the actual AI response excerpts. Crawls those competitor articles to see what structural pattern is winning.
-4. **Rewrites each article** — augmenting, never replacing. Original claims, quotes, images, internal links are preserved. Schema gaps filled. Trust blocks added. Tables drafted. FAQ blocks generated from your matched Peec prompts. Brand voice applied throughout.
-
-Every recommendation ships with a complete evidence trail: Peec gap signal + the relevant GEO rule + the competitor example + the exact article field the gap was detected in.
-
-Outputs land on disk in `~/.ai-search-blog-optimiser/runs/{timestamp}/optimised/` — markdown, styled HTML, JSON-LD schema, handoff doc, diff vs original, and every image preserved in a self-contained folder ready for your CMS.
+**Built by [AI Heroes](https://aiheroes.site). Submitted to the [Peec AI MCP Challenge](https://peec-ai.notion.site/Peec-MCP-Challenge-Quick-Start-Kit-33ccac05310f805fb0a8dbcabe1a66d9).**
 
 ---
 
-## Install
-
-### Prerequisites
-
-1. **Claude Desktop** with the Cowork plugin system (April 2026+).
-2. **Peec AI MCP** connected to Claude Desktop. Follow the [Peec MCP Quick Start](https://peec-ai.notion.site/Peec-MCP-Challenge-Quick-Start-Kit-33ccac05310f805fb0a8dbcabe1a66d9) and ensure you have at least one project configured with tracked topics, prompts, and competitors.
-3. **Crawl4AI MCP** connected to Claude Desktop. See [Crawl4AI](https://github.com/unclecode/crawl4ai) for setup.
-4. **Python 3.8+** on PATH. macOS bundles this by default; Windows/Linux users install from [python.org](https://python.org).
-
-### Install the plugin
-
-1. Download `ai-search-blog-optimiser.zip` from the [latest release](https://github.com/mlobo2012/AI-search-blog-optimiser/releases).
-2. Unzip into `~/.claude/plugins/marketplaces/local-desktop-app-uploads/AI-search-blog-optimiser/`.
-3. In Claude Desktop, run `/plugin reload`.
-4. Confirm the command is available: type `/blog-optimiser` — you should see it in the slash-command menu.
-
-### First run
+## Quick demo
 
 ```
-/blog-optimiser https://www.your-blog.com/blog
+/blog-optimiser https://www.your-blog.com/blog --max-articles 3 --no-gates
 ```
 
-- Your browser opens to `http://127.0.0.1:{port}/` with the AI Heroes dashboard.
-- The plugin auto-matches your blog's domain to one of your Peec projects.
-- If multiple matches or no matches, a banner in the dashboard asks you to pick.
-- If you have no Peec projects, the plugin runs in "generic mode" (GEO best practices without live gap data) and surfaces a link to Peec setup.
-- Progress updates live in the dashboard as each stage completes.
+1. Browser opens to a live AI Heroes branded dashboard.
+2. 4 stages run: crawl → brand voice → recommendations → generation.
+3. Each article gets a before/after audit score (40-point rubric), 5–7 evidence-grounded recommendations, and an optimised rewrite with FAQPage/Person/Organization schema.
+4. Outputs land in `~/.ai-search-blog-optimiser/runs/{timestamp}/optimised/{slug}/` as self-contained folders ready for CMS upload.
 
-Typical run: ~10–15 minutes for a blog of 15–20 articles.
+Proven on Granola (3 articles): **audit scores 22→35, 24→36, 26→36**; average lift **+11.7 points**. Every recommendation carries a Peec gap signal + Schmidt GEO rule + competitor example + original-article field provenance.
 
 ---
 
-## How it works
+## For a content team: install + use
 
-Seven specialised agents, dispatched by an orchestrator, running with isolated context windows and disk-backed shared state:
+### Prerequisites (one-time)
 
-| Agent | Model | Role |
-|---|---|---|
-| `blog-optimiser-orchestrator` | Opus | Top-level planning, dispatch, checkpointing |
-| `blog-crawler` | Haiku | Crawl4AI extraction per article |
-| `voice-extractor` | Sonnet | Synthesise persistent brand-voice artefact |
-| `peec-gap-reader` | Sonnet | Pull matched prompts + gap data + AI response excerpts |
-| `competitor-crawler` | Haiku | Crawl competitor URLs from the gap report |
-| `recommender` | Opus | Synthesise 5–7 grounded recommendations per article |
-| `generator` | Opus | Rewrite each article augmenting with accepted recs, preserving originals |
+1. **Claude Desktop** (Cowork) — April 2026 or later
+2. **Peec AI MCP** connected in Claude Desktop. Follow the [Peec MCP Quick Start](https://peec-ai.notion.site/Peec-MCP-Challenge-Quick-Start-Kit-33ccac05310f805fb0a8dbcabe1a66d9). You need at least one project with tracked topics, prompts, and competitors.
+3. **Crawl4AI MCP** connected as an `stdio→SSE bridge` in Claude Desktop. See [Development setup below](#development-setup) for the exact config.
+4. **Python 3.8+** — macOS bundles this by default. Verify with `which python3`.
 
-**Context management:** The orchestrator never reads article bodies; it passes file paths. Sub-agents each get a fresh context window (up to Cowork's 1M on Max plans) and return compact summaries. All shared state lives on disk under `runs/{run_id}/`.
+### Install
 
-**Parallelism:** Steps 5 (recommend) and 6 (generate) fan out with concurrency cap = 3. Balances throughput against Anthropic + Peec rate limits.
+1. Download `ai-search-blog-optimiser-v0.2.0.zip` from [the latest release](https://github.com/mlobo2012/AI-search-blog-optimiser/releases).
+2. In Claude Desktop → Settings → Plugins → Upload plugin → pick the zip.
+3. Confirm the `blog-optimiser-dashboard` MCP shows as connected in Settings → MCP Servers.
 
-**Resumability:** Every write is atomic. Crash Claude Desktop mid-run? Relaunch and `/blog-optimiser --resume {run_id}` picks up from the last completed checkpoint.
+### Run
+
+```
+/blog-optimiser https://www.your-blog.com/blog --max-articles 3 --no-gates
+```
+
+Arguments:
+
+| Flag | Effect |
+|---|---|
+| *(positional URL)* | Blog index URL. Required unless `--resume`. |
+| `--max-articles N` | Cap. Default 20. Use 3 for first test runs. |
+| `--no-gates` | Skip human-in-the-loop review pauses between stages. For autonomous runs. |
+| `--resume {run_id}` | Resume from last completed stage. Use the timestamp from `~/.ai-search-blog-optimiser/runs/`. |
+
+Typical wall-clock with `--max-articles 20` + 3-way parallelism: ~15 minutes.
+
+### Outputs
+
+```
+~/.ai-search-blog-optimiser/runs/{timestamp}/
+  state.json              ← Source of truth for pipeline state
+  gates.json              ← Gate decisions (if --no-gates not set)
+  run-summary.md          ← Aggregate table, before/after scores
+  articles/{slug}.json    ← Per-article structural fingerprint
+  recommendations/{slug}.json   ← 5–7 grounded recs per article
+  optimised/{slug}/
+    {slug}.md             ← CMS-ready markdown
+    {slug}.html           ← Styled preview with schema embedded
+    {slug}.schema.json    ← Standalone JSON-LD payload
+    {slug}.handoff.md     ← Review brief for content team
+    {slug}.diff.md        ← What changed vs original
+```
 
 ---
 
-## Output anatomy
+## Architecture
 
-For each article, the plugin produces in `runs/{run_id}/optimised/{slug}/`:
+Slash command → skill running in main session → parallel leaf sub-agents. No orchestrator sub-agent. See [Implementation nuances](#implementation-nuances--11-hard-lessons) for why.
 
-- `{slug}.md` — CMS-ready markdown with full frontmatter
-- `{slug}.html` — styled preview in AI Heroes theme, schema JSON-LD embedded
-- `{slug}.schema.json` — standalone JSON-LD payload for direct engineer injection
-- `{slug}.diff.md` — section-level diff vs original: what changed, what was preserved, what's flagged for human input
-- `{slug}.handoff.md` — review brief for the content team: before/after audit scores, recommendations applied with full evidence trail, per-engine lift table
-- `media/{slug}/` — every image used, preserved from the original
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  User: /blog-optimiser https://www.granola.ai/blog              │
+└────────────────────────────────────┬─────────────────────────────┘
+                                     │
+                                     ▼
+         ┌──────────────────────────────────────────────┐
+         │  MAIN SESSION (Opus 4.7, 1M context)         │
+         │  loads skills/blog-optimiser-pipeline/       │
+         │  SKILL.md and runs these stages:             │
+         └───┬──────────────────────────────────────────┘
+             │
+ Stage 0/1 ──┼─▶  mcp__blog-optimiser-dashboard__open_dashboard   (main-session only)
+             ├─▶  mcp__peec__list_projects → match domain → register_run
+ Stage 2   ──┼─▶  Task(blog-crawler)                              ← Haiku 4.5
+ Stage 3   ──┼─▶  Task(voice-extractor)                           ← Sonnet 4.6
+ Stage 4   ──┼─▶  Task(recommender) × N (parallel batches of 3)   ← Opus 4.7
+             │       └─▶ Task(peec-gap-reader) + Task(competitor-crawler)
+ Stage 5   ──┼─▶  Task(generator) × N (parallel batches of 3)     ← Opus 4.7
+ Stage 6   ──┴─▶  write run-summary.md + final state push
+                                     │
+                                     ▼
+┌─────────────────────────────────┐  ┌──────────────────────────────┐
+│  Disk (source of truth)         │  │  Dashboard HTTP daemon       │
+│  ~/.ai-search-blog-optimiser/   │  │  detached subprocess          │
+│    runs/{ts}/state.json         │◀─┤  reads disk; polls 1.5s       │
+│    runs/{ts}/articles/*.json    │  │  lockfile: dashboard.lock     │
+│    runs/{ts}/recommendations/*  │  │  survives MCP restarts        │
+│    runs/{ts}/optimised/*        │  │  http://127.0.0.1:{port}/     │
+│    brands/{peec_id}/*.md        │  │  Live UI with AI Heroes theme │
+└─────────────────────────────────┘  └──────────────────────────────┘
+```
 
-A `run-summary.md` at the root of the run summarises all articles with scores and dispositions.
+### Directory tree
+
+```
+AI-search-blog-optimiser/
+├── .claude-plugin/
+│   └── plugin.json             # Manifest: name, version, description
+├── .mcp.json                   # Declares the embedded dashboard MCP (stdio)
+├── commands/
+│   └── blog-optimiser.md       # Slash command entry — loads skill in main session
+├── skills/
+│   ├── blog-optimiser-pipeline/
+│   │   └── SKILL.md            # Canonical 7-stage orchestration playbook
+│   └── peec-gap-read/
+│       └── SKILL.md            # Reusable Peec MCP recipe
+├── agents/                     # Leaf sub-agents (Task-invocable)
+│   ├── blog-crawler.md         # Haiku — Crawl4AI extraction
+│   ├── voice-extractor.md      # Sonnet — brand voice artefact
+│   ├── peec-gap-reader.md      # Sonnet — Peec gap analysis
+│   ├── competitor-crawler.md   # Haiku — competitor URL structural crawl
+│   ├── recommender.md          # Opus — synthesis with evidence trails
+│   └── generator.md            # Opus — augment-not-rewrite article generation
+├── dashboard/
+│   ├── server.py               # MCP stdio + detached HTTP daemon (stdlib only)
+│   ├── index.html              # Live dashboard (Tailwind + Alpine via CDN)
+│   ├── welcome.html            # No-run state
+│   └── assets/
+│       ├── ai-heroes.css       # AI Heroes brand tokens
+│       ├── fonts/              # Miftah + Outfit-Variable (from ai-heroes-website)
+│       └── img/                # Logo + icon SVGs
+├── config/
+│   └── brand-config.example.yaml
+├── tests/
+│   └── dashboard_e2e_test.py   # MCP stdio + HTTP smoke test
+├── CHANGELOG.md                # Version notes (v0.1.0 → v0.2.0)
+├── LICENSE                     # Apache 2.0 + Commons Clause
+└── README.md                   # this file
+```
+
+### Tech stack
+
+- **Runtime:** Claude Cowork (desktop) with Opus 4.7 / 4.6 (1M context), Sonnet 4.6, Haiku 4.5 via plugin-defined sub-agents
+- **Plugin surface:** `.claude-plugin/plugin.json`, `.mcp.json`, `commands/`, `skills/`, `agents/`
+- **Local HTTP dashboard:** Python 3 stdlib only (`http.server` + `socketserver` + `subprocess`). Zero pip deps. ~550 lines in one file.
+- **Frontend:** Tailwind CSS + Alpine.js, both via CDN. No build step.
+- **Bundled fonts:** Miftah (display) + Outfit Variable (body) — AI Heroes brand
+- **External MCPs (user must connect):** Peec AI MCP, Crawl4AI MCP
+- **Embedded MCP (ships with plugin):** `blog-optimiser-dashboard` — exposes 10 tools: `open_dashboard`, `get_dashboard_url`, `register_run`, `update_state`, `list_runs`, `get_decisions`, `show_banner`, `get_paths`, `set_gate`, `get_gates`
+
+### Pipeline stages
+
+| # | Stage | Agent | Model | Typical time | Outputs |
+|---|---|---|---|---|---|
+| 0 | Prereq + dashboard | main session | Opus 4.7 | 5s | `dashboard.lock`, browser open |
+| 1 | Peec project resolve | main session | Opus 4.7 | 5–30s | `state.json` with `brand.peec_project_id` |
+| 2 | Blog crawl | `blog-crawler` | Haiku 4.5 | 60–120s | `articles/*.json`, `media/*` |
+| 3 | Brand voice | `voice-extractor` | Sonnet 4.6 | 30–60s | `brands/{peec_id}/brand-voice.md` |
+| 4 | Recommendations | `recommender` × N (cap=3 concurrent) | Opus 4.7 | ~2–4 min per batch of 3 | `recommendations/{slug}.json`, `gaps/{slug}.json`, `competitors/{slug}.json` |
+| 5 | Generate | `generator` × N (cap=3 concurrent) | Opus 4.7 | ~1–2 min per batch of 3 | `optimised/{slug}/{md,html,schema,handoff,diff}` |
+| 6 | Finalise | main session | — | 5s | `run-summary.md`, final `state.json` |
+
+### The evidence trail (why every recommendation is credible)
+
+Each of the 5–7 recommendations per article ships with all four evidence slots populated:
+
+```json
+{
+  "id": "rec-1",
+  "fix": "Add a 30-60 word trust block above the fold directly answering 'how do I take good meeting notes with AI'...",
+  "severity": "critical",
+  "effort": "<1h",
+  "expected_lift_per_engine": { "chatgpt": "+0.8 citation rate", "perplexity": "+0.3", "google_ai_mode": "+0.5" },
+  "evidence": {
+    "peec_gap": {                                   // ← LIVE data, your own Peec project
+      "prompt": "how do I take good meeting notes with AI",
+      "engines_lost": ["perplexity", "chatgpt"],
+      "cited_competitors": ["otter.ai/blog/take-better-notes"],
+      "brand_visibility_baseline": { "chatgpt": 0.12, "perplexity": 0.0 }
+    },
+    "schmidt_rule": "blog-optimiser-pipeline#1 (trust block at top)",       // ← GEO best-practice citation
+    "competitor_example": {                          // ← What competitors are doing
+      "url": "otter.ai/blog/take-better-notes",
+      "excerpt": "The best meeting notes capture decisions...",
+      "evidence_of_citation_rate": "cited 2.1x on ChatGPT for this prompt"
+    },
+    "step1_field": "structure.heading_tree[0]"      // ← Original article's exact failing field
+  },
+  "auto_fix": { "action": "prepend_block", "payload": {...} }               // ← Generator consumes this
+}
+```
 
 ---
 
-## Recommendation evidence trail
+## Implementation nuances — 11 hard lessons
 
-Every recommendation includes:
+Every rule here prevents a shipped-version regression. If you skip these, you'll ship `v0.1.0` and immediately need to rewrite. See also `~/.claude/skills/plugin-development/SKILL.md` for the generalised pattern.
 
-1. **Fix** — concrete, specific action (not "consider adding a trust block" — "add a 30-60 word trust block answering 'how do I take good meeting notes with AI' — competitor otter.ai/blog/take-better-notes (cited 2.1× on ChatGPT for this prompt) opens with this exact pattern").
-2. **Severity** — critical / high / medium / low.
-3. **Effort** — <1h / 1–4h / 1 day / multi-day.
-4. **Expected lift per engine** — grounded in Peec benchmarks (ChatGPT ≥2.0, Perplexity 1.5–2.0, Google AI Mode 1.1–1.5).
-5. **Evidence trail** — four slots, all filled:
-   - **Peec gap** — the matched prompt, engines you're losing on, cited competitor URLs and rates
-   - **GEO rule** — specific rule reference (e.g. `geo-content-engineering#1 trust block at top`)
-   - **Competitor example** — URL + verbatim excerpt of what won the citation
-   - **Detected in** — the exact article field that failed (e.g. `schema.types_missing` or `trust.author.linkedin`)
+1. **Plugin install dir is READ-ONLY for sub-agents** in Cowork's sandbox. `${CLAUDE_PLUGIN_ROOT}/runs/` writes silently no-op. All writable state lives under `$HOME/.ai-search-blog-optimiser/`. Static assets (HTML, CSS, fonts) stay under plugin root (read access is fine).
 
-No generic advice. No fabricated numbers. No universal benchmarks across engines. Every claim traces back to either your article, your Peec data, or a cited research source.
+2. **Claude Desktop MCP config only supports `stdio`.** `type: "sse"` or `type: "http"` in `claude_desktop_config.json` is silently rejected. Use `mcp-remote` as a stdio→SSE bridge for SSE servers like Crawl4AI.
+
+3. **Claude Desktop spawns MCPs with empty PATH.** `command: "npx"` fails with "No such file or directory" in a log the user never sees. Use **absolute path** to executables + explicit `env.PATH` including node bin dir.
+
+4. **Desktop side effects (browser open, notifications) ONLY fire from main-session MCP calls.** Sub-agent calls to `open_dashboard` are silently dropped at the Cowork sandbox boundary. That's why v0.2 removed the `orchestrator` sub-agent and makes the main session itself run the orchestration skill directly.
+
+5. **MCP stdio processes get killed on idle + session boundaries.** A daemon thread inside the MCP process dies with it; port changes on reconnect. The dashboard uses `subprocess.Popen(start_new_session=True)` to detach the HTTP daemon with a `dashboard.lock` (PID + port). Next MCP spawn reuses if healthy, respawns if stale. URL stays stable.
+
+6. **MCP is a transient comms channel, not a state channel.** When MCP disconnects mid-run, `update_state` pushes are lost. The main session writes `state.json` **directly via the Write tool** from disk; MCP push is a best-effort browser wake-up signal only. Disk is the source of truth.
+
+7. **1M Cowork context still compacts at turn boundaries** when accumulated sub-agent summaries overflow. Every sub-agent returns ≤300 tokens to the main session. All artefacts go to disk; main carries paths + counts only.
+
+8. **Task parallelism requires a single message.** Multiple `Task(...)` calls spread across messages run serially. The skill explicitly instructs the main session to dispatch 3 Task calls in one assistant message per batch.
+
+9. **`osascript` + `screencapture` can't automate Claude Desktop from a sandboxed terminal.** Conductor lacks Accessibility + Screen Recording permissions. Observability is via `~/Library/Logs/Claude/main.log` + `state.json` + HTTP endpoints — no screenshots needed.
+
+10. **Electron apps (Cowork) hide their AX tree.** Only ~12 top-level nodes visible. Don't script Claude Desktop UI — test the plugin via its MCPs + disk state directly.
+
+11. **Main session IS the orchestrator. Do NOT name an "orchestrator" sub-agent.** The command loads the skill; the skill's instructions run in the main session; sub-agents are leaf workers. A handoff to a sub-agent breaks dashboard auto-open, parallel fan-out, and introduces context compaction.
 
 ---
 
-## Troubleshooting
+## Development setup
 
-### "Peec AI MCP is not connected"
+Target audience: another engineer who wants to hack on this plugin.
 
-Follow the [Peec MCP Quick Start](https://peec.ai). The plugin still runs without Peec (generic mode) but you lose the live gap data — recommendations become best-practice-only.
+### 1. Clone
 
-### "Crawl4AI MCP is not connected"
-
-Crawl4AI is required — no fallback. Install from [github.com/unclecode/crawl4ai](https://github.com/unclecode/crawl4ai) and re-run `/plugin reload`.
-
-### Dashboard doesn't open / browser shows "connection refused"
-
-Check that `python3` is on your PATH:
-
-```
-which python3 && python3 --version
+```bash
+git clone https://github.com/mlobo2012/AI-search-blog-optimiser.git
+cd AI-search-blog-optimiser
 ```
 
-If missing, install from [python.org](https://python.org). Then `/plugin reload`.
+### 2. Install dev dependencies
 
-### Dashboard shows "no active run" indefinitely
+None. The plugin is stdlib-only Python + vanilla HTML/JS. Verify:
 
-The orchestrator agent hasn't registered a run yet. Check Claude Desktop's chat for error messages. If stuck, run `/blog-optimiser` again — resumable state means no work is lost.
-
-### Run crashed mid-way
-
-```
-/blog-optimiser --resume {run_id}
+```bash
+python3 --version     # ≥ 3.8
+python3 -m py_compile dashboard/server.py   # must exit 0
 ```
 
-The `{run_id}` is a timestamp like `2026-04-21T18-52-33`. You'll find it under `~/.ai-search-blog-optimiser/runs/`.
+### 3. Wire up MCPs in Claude Desktop
 
-### Where's my data?
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` to add the Peec + Crawl4AI MCPs. Minimal reference (adjust paths to your system):
 
-All writable state — runs, optimised articles, brand-voice artefacts — lives in `~/.ai-search-blog-optimiser/`:
+```json
+{
+  "mcpServers": {
+    "peec": {
+      "type": "http",
+      "url": "https://api.peec.ai/mcp"
+    },
+    "c4ai-sse": {
+      "command": "/Users/YOU/local/node-v22.16.0-darwin-arm64/bin/npx",
+      "args": ["-y", "mcp-remote", "http://localhost:11235/mcp/sse", "--transport", "sse-only"],
+      "env": {
+        "PATH": "/Users/YOU/local/node-v22.16.0-darwin-arm64/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      }
+    }
+  }
+}
+```
 
-- `~/.ai-search-blog-optimiser/runs/{run_id}/` — per-run state, articles, recommendations, optimised outputs
-- `~/.ai-search-blog-optimiser/brands/{peec_project_id}/` — persistent brand voice profiles (safe to edit by hand; the voice-extractor merges rather than overwrites)
+> **Note:** `peec` uses `type: "http"` because Peec provides an official hosted HTTP MCP. `c4ai-sse` uses the stdio→SSE bridge because it's a locally-hosted SSE server. See nuances #2 and #3 above for why the bridge pattern exists.
 
-Override via the `AI_SEARCH_BLOG_OPTIMISER_DATA` env var if you want a different location. The plugin install directory itself is read-only in Cowork's sandbox, so it never contains user data.
+For Crawl4AI setup, see [unclecode/crawl4ai](https://github.com/unclecode/crawl4ai). Run it via Docker or the Python package — default port 11235.
 
-### Some articles are marked "partial" or "failed"
+### 4. Install the plugin for development
 
-Open the dashboard, expand the article, look at the stage that failed. Common causes:
+Either:
+- **Symlink** (recommended for dev): `ln -s $(pwd) ~/.claude/plugins/marketplaces/local-desktop-app-uploads/ai-search-blog-optimiser`
+- **Zip + upload**: `zip -r /tmp/plugin.zip .claude-plugin .mcp.json commands agents skills dashboard config tests README.md CHANGELOG.md LICENSE -x "*.DS_Store" "runs/*"` then upload via Claude Desktop's plugin uploader
 
-- Crawl4AI timed out on a JS-heavy page → retry via the dashboard's "Re-run" button.
-- Peec had no data for the matched prompts (cold start) → article still gets processed, just without Peec evidence.
-- Generator produced < 32/40 audit → review the flagged dimensions, reject some recommendations, re-run the generator stage.
+Fully quit Claude Desktop (⌘Q) + reopen after either install method.
 
-### Brand voice contamination across runs
+### 5. Run the smoke test
 
-Brand voice is namespaced by `peec_project_id` + role (`own` / `competitor`). Running on a competitor writes to `.context/brands/{peec_project_id}-competitor-view/{domain}/`, never the own-brand artefact. If you suspect contamination, check the file path in `.context/brands/` — the directory name tells you which profile was used.
+```bash
+python3 tests/dashboard_e2e_test.py
+```
 
-### Port clashes
+This spawns the MCP stdio server, verifies it exposes all 10 tools, registers a run, sets a gate, resolves it via the HTTP endpoint (simulating the Continue button), and cleans up. Takes ~5 seconds. Must print `ALL GREEN`.
 
-The dashboard auto-picks a free port. If you have multiple runs or other services, expect ports like `:62543` rather than a fixed `:8080`.
+### 6. Live test
+
+In Claude Desktop:
+
+```
+/blog-optimiser https://www.granola.ai/blog --max-articles 3 --no-gates
+```
+
+Observability:
+
+```bash
+# Watch Claude Desktop's agent activity
+tail -f ~/Library/Logs/Claude/main.log | grep -iE "blog-optimiser|Task|peec|c4ai"
+
+# Watch our MCP server's stderr
+tail -f ~/Library/Logs/Claude/mcp-server-blog-optimiser-dashboard.log
+
+# Watch pipeline state update live
+watch -n 2 'ls -t ~/.ai-search-blog-optimiser/runs/ | head -1 | xargs -I {} cat ~/.ai-search-blog-optimiser/runs/{}/state.json | python3 -m json.tool | head -40'
+```
+
+### 7. Iterate
+
+- Edit `dashboard/server.py` → `/plugin reload` in Claude Desktop (or quit+reopen)
+- Edit `skills/blog-optimiser-pipeline/SKILL.md` → takes effect on next `/blog-optimiser` invocation
+- Edit `agents/{name}.md` → same
+- Edit `dashboard/index.html` → refresh the browser tab
+
+If something's broken, run `bash ~/.claude/skills/plugin-doctor/run.sh ai-search-blog-optimiser` — it runs 8 diagnostic checks in order and reports the first failure with a concrete fix.
 
 ---
 
 ## Privacy
 
 Everything runs on your machine except what goes to:
-- **Claude** (via the Claude Desktop API) — agent reasoning, article text, recommendation synthesis.
-- **Peec AI MCP** — your existing connection, per your Peec account settings.
-- **Crawl4AI MCP** — your existing connection.
-- **CDNs** — the dashboard HTML loads Tailwind and Alpine from jsdelivr; no data goes back.
 
-No telemetry. No lead tracking. No data leaves unless you explicitly hand off artefacts from `runs/` elsewhere.
+- **Claude** (via Claude Desktop) — agent reasoning, article text, recommendations
+- **Peec AI MCP** — your existing connection, per your Peec account
+- **Crawl4AI MCP** — your local instance (or whatever host you configured)
+- **CDNs** — the dashboard HTML loads Tailwind + Alpine from jsdelivr; no data leaves
+
+No telemetry. No lead tracking. Nothing leaves unless you explicitly export from `~/.ai-search-blog-optimiser/runs/`.
 
 ---
 
-## Roadmap
+## Versioning + releases
 
-- Slack integration — push handoff docs to a content-team channel.
-- Continuous drift loop — daily Peec sampling triggers automatic re-optimisation when a cited competitor changes.
-- CMS push — Webflow, Contentful, Ghost, WordPress integrations behind confirmation gates.
-- Net-new article generation — identify demand pockets your brand hasn't covered via `list_prompts` with no-coverage filter.
-- Off-site distribution plan generator — per-article outbound plan for Reddit, LinkedIn, YouTube, editorial pitches.
+See `CHANGELOG.md` for version notes. Current release: **v0.2.0**.
+
+Release process:
+
+```bash
+# 1. Bump version in .claude-plugin/plugin.json
+# 2. Update CHANGELOG.md
+# 3. Build zip
+rm -f ~/Downloads/ai-search-blog-optimiser-v{VERSION}.zip
+zip -r ~/Downloads/ai-search-blog-optimiser-v{VERSION}.zip \
+  .claude-plugin .mcp.json commands agents skills dashboard config tests \
+  README.md CHANGELOG.md LICENSE .gitignore \
+  -x "*.DS_Store" "*/__pycache__/*" "runs/*" ".context/*" "*.pyc"
+# 4. git commit + tag
+git commit -am "v{VERSION}: ..."
+git tag v{VERSION}
+git push --tags origin main
+# 5. gh release create v{VERSION} ~/Downloads/ai-search-blog-optimiser-v{VERSION}.zip
+```
 
 ---
 
@@ -199,6 +366,17 @@ No telemetry. No lead tracking. No data leaves unless you explicitly hand off ar
 
 Apache 2.0 with Commons Clause. See `LICENSE`.
 
-## Built by
+## Contributing
 
-[AI Heroes](https://aiheroes.site) · Built for the [Peec AI MCP Challenge](https://peec-ai.notion.site/Peec-MCP-Challenge-Quick-Start-Kit-33ccac05310f805fb0a8dbcabe1a66d9)
+Built by Marco Lobo + Claude Opus for AI Heroes. Issues + PRs welcome.
+
+Reading order before contributing:
+
+1. `CHANGELOG.md` — how we got here
+2. `skills/blog-optimiser-pipeline/SKILL.md` — the canonical orchestration playbook
+3. `dashboard/server.py` — reference implementation for the detached-daemon + disk-first-state pattern
+4. `~/.claude/skills/plugin-development/SKILL.md` — generalised learnings applicable to any Cowork plugin (if you have it installed)
+
+## Built for
+
+[AI Heroes](https://aiheroes.site) · [Peec AI MCP Challenge](https://peec-ai.notion.site/Peec-MCP-Challenge-Quick-Start-Kit-33ccac05310f805fb0a8dbcabe1a66d9)
