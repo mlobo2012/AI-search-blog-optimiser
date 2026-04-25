@@ -92,10 +92,43 @@ def _load_json(path: Path) -> Any:
     return _coerce_json_payload(json.loads(path.read_text(encoding="utf-8")))
 
 
+def _load_required_json(path: Path, label: str) -> Any:
+    if not path.exists():
+        raise ValueError(f"{label} is required but missing: {path}")
+    return _load_json(path)
+
+
+def _read_required_text(path: Path, label: str) -> str:
+    if not path.exists():
+        raise ValueError(f"{label} is required but missing: {path}")
+    text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        raise ValueError(f"{label} is required but empty: {path}")
+    return text
+
+
 def _require_mapping(value: Any, label: str, path: Path) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     raise ValueError(f"{label} must be a JSON object: {path}")
+
+
+def _coerce_audit_score(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        score = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, min(40, score))
+
+
+def _first_audit_score(*values: Any) -> int | None:
+    for value in values:
+        score = _coerce_audit_score(value)
+        if score is not None:
+            return score
+    return None
 
 
 def _normalize_text(value: str) -> str:
@@ -741,22 +774,75 @@ def _validate_author(
     return result
 
 
+def _numeric_score_breakdown(
+    module_status: dict[str, bool],
+    required_modules: list[str],
+    author_validation: dict[str, Any],
+    scope_drift: dict[str, Any],
+    schema_status: str,
+    inline_evidence_passed: bool,
+    rec_implementation_issues: list[str],
+) -> dict[str, Any]:
+    required_total = len(required_modules)
+    required_passed = sum(1 for item in required_modules if module_status.get(item, False))
+    required_points = round(16 * (required_passed / required_total)) if required_total else 0
+    checks = {
+        "required_modules": {
+            "points": required_points,
+            "max": 16,
+            "passed": required_passed,
+            "total": required_total,
+        },
+        "trust_author": {
+            "points": 6 if author_validation.get("status") == "passed" else 0,
+            "max": 6,
+            "passed": author_validation.get("status") == "passed",
+        },
+        "evidence": {
+            "points": 6 if inline_evidence_passed else 0,
+            "max": 6,
+            "passed": inline_evidence_passed,
+        },
+        "schema": {
+            "points": 6 if schema_status == "passed" else 0,
+            "max": 6,
+            "passed": schema_status == "passed",
+        },
+        "scope": {
+            "points": 4 if scope_drift.get("status") == "passed" else 0,
+            "max": 4,
+            "passed": scope_drift.get("status") == "passed",
+        },
+        "rec_implementation": {
+            "points": 2 if not rec_implementation_issues else 0,
+            "max": 2,
+            "passed": not rec_implementation_issues,
+        },
+    }
+    total = sum(int(item["points"]) for item in checks.values())
+    return {
+        "score": max(0, min(40, total)),
+        "score_max": 40,
+        "checks": checks,
+    }
+
+
 def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | None = None) -> dict[str, Any]:
     state_path = run_dir / "state.json"
-    state = _require_mapping(_load_json(state_path), "state", state_path)
+    state = _require_mapping(_load_required_json(state_path, "state"), "state", state_path)
     outputs = run_dir / "outputs"
     article_path = outputs / "articles" / f"{article_slug}.json"
-    article = _require_mapping(_load_json(article_path), "article artifact", article_path)
+    article = _require_mapping(_load_required_json(article_path, "article artifact"), "article artifact", article_path)
     recommendations_path = outputs / "recommendations" / f"{article_slug}.json"
-    recommendations = _require_mapping(_load_json(recommendations_path), "recommendation artifact", recommendations_path)
+    recommendations = _require_mapping(_load_required_json(recommendations_path, "recommendation artifact"), "recommendation artifact", recommendations_path)
     evidence_path = outputs / "evidence" / f"{article_slug}.json"
     evidence = _load_json(evidence_path) if evidence_path.exists() else {}
     if not isinstance(evidence, dict):
         evidence = {}
     html_path = outputs / "optimised" / f"{article_slug}.html"
     schema_path = outputs / "optimised" / f"{article_slug}.schema.json"
-    html_text = html_path.read_text(encoding="utf-8")
-    schema_payload = _load_json(schema_path)
+    html_text = _read_required_text(html_path, "rendered HTML")
+    schema_payload = _load_required_json(schema_path, "schema package")
     existing_manifest_path = outputs / "optimised" / f"{article_slug}.manifest.json"
     existing_manifest = _load_json(existing_manifest_path) if existing_manifest_path.exists() else {}
     if not isinstance(existing_manifest, dict):
@@ -831,6 +917,13 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
     host = (urlparse(article_url).hostname or "").lower()
     brand_name = host[4:] if host.startswith("www.") else host
     brand_name = brand_name.split(".")[0]
+    inline_evidence_passed = (
+        inline_evidence_count >= requirements["minimum_inline_references"]
+        and internal_source_count >= requirements["minimum_internal_sources"]
+        and external_source_count >= requirements["minimum_external_sources"]
+        and (internal_source_count + external_source_count) >= requirements["minimum_total_sources"]
+        and all(item in matched_claim_ids for item in requirements.get("must_cite_claim_ids", []))
+    )
 
     module_status = {
         "tldr_block": "tl;dr" in snapshot.visible_text.lower(),
@@ -840,13 +933,7 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
         ]),
         "question_headings": question_heading_count >= 2,
         "atomic_paragraphs": short_paragraph_ratio >= 0.6 and average_paragraph_words <= 75,
-        "inline_evidence": (
-            inline_evidence_count >= requirements["minimum_inline_references"]
-            and internal_source_count >= requirements["minimum_internal_sources"]
-            and external_source_count >= requirements["minimum_external_sources"]
-            and (internal_source_count + external_source_count) >= requirements["minimum_total_sources"]
-            and all(item in matched_claim_ids for item in requirements.get("must_cite_claim_ids", []))
-        ),
+        "inline_evidence": inline_evidence_passed,
         "semantic_html": len([item for item in snapshot.headings if item["level"] == 2]) >= 2 and (snapshot.table_count or snapshot.unordered_lists or snapshot.ordered_lists),
         "chunk_complete_sections": len([item for item in snapshot.headings if item["level"] == 2]) >= 3 and len(snapshot.paragraphs) >= 5,
         "differentiation": brand_name in snapshot.visible_text.lower() and len(referenced_items) >= 2,
@@ -913,13 +1000,37 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
     blocking_issues.extend(rec_implementation_issues)
 
     quality_status = "passed" if not blocking_issues and not missing_required_modules else "failed"
+    passed_modules = sorted(key for key, value in module_status.items() if value)
+    failed_modules = sorted(key for key, value in module_status.items() if not value)
+    passed_required_modules = sorted(item for item in required_modules if module_status.get(item, False))
+    failed_required_modules = sorted(item for item in required_modules if not module_status.get(item, False))
+    module_checks = {
+        "passed_count": len(passed_required_modules),
+        "failed_count": len(failed_required_modules),
+        "passed": passed_required_modules,
+        "failed": failed_required_modules,
+        "all_passed": passed_modules,
+        "all_failed": failed_modules,
+    }
+    score_breakdown = _numeric_score_breakdown(
+        module_status,
+        required_modules,
+        author_validation,
+        scope_drift,
+        schema_status,
+        inline_evidence_passed,
+        rec_implementation_issues,
+    )
     audit = recommendations.get("audit") or {}
     article_stage = next((item for item in state.get("articles", []) if item.get("slug") == article_slug), {})
     stage_draft = ((article_stage.get("stages") or {}).get("draft") or {})
-    audit_before = audit.get("score_before")
-    resolved_audit_after = audit_after
-    if resolved_audit_after is None:
-        resolved_audit_after = existing_manifest.get("audit_after", stage_draft.get("audit_after"))
+    audit_before = _coerce_audit_score(audit.get("score_before"))
+    resolved_audit_after = _first_audit_score(
+        audit_after,
+        existing_manifest.get("audit_after"),
+        stage_draft.get("audit_after"),
+        score_breakdown["score"],
+    )
 
     return {
         "article_slug": article_slug,
@@ -928,6 +1039,8 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
         "intent_class": intent,
         "audit_before": audit_before,
         "audit_after": resolved_audit_after,
+        "score_breakdown": score_breakdown,
+        "module_checks": module_checks,
         "quality_gate": {
             "status": quality_status,
             "passed": quality_status == "passed",
