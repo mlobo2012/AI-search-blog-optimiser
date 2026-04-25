@@ -71,6 +71,10 @@ SCOPE_DRIFT_STOPWORDS = {
     "have", "into", "its", "just", "more", "over", "that", "than", "their", "there",
     "they", "this", "what", "when", "where", "which", "with", "your",
 }
+QUESTION_HEADING_WORD_RE = re.compile(
+    r"^(which|how|what|why|when|where|who|can|does|is|are|should)\b",
+    re.IGNORECASE,
+)
 
 
 def _coerce_json_payload(value: Any) -> Any:
@@ -142,6 +146,13 @@ def _looks_like_faq_question(text: str) -> bool:
     if normalized.endswith("?"):
         return True
     return bool(re.match(r"^(how|what|when|where|which|who|why|can|could|should|do|does|is|are|will)\b", normalized, re.IGNORECASE))
+
+
+def _looks_like_question_heading(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    return normalized.endswith("?") or bool(QUESTION_HEADING_WORD_RE.match(normalized))
 
 
 def _canonicalize_url(url: str, base_url: str | None = None) -> str:
@@ -779,39 +790,13 @@ def _validate_author(
 
 
 def _validate_trust_block(author_validation: dict[str, Any], reviewers: list[dict[str, Any]]) -> dict[str, Any]:
-    review_lookup = {
-        str(item.get("id")): item
-        for item in reviewers
-        if isinstance(item, dict) and item.get("id")
-    }
     reviewer_id = author_validation.get("reviewer_id")
     author_passed = author_validation.get("status") == "passed"
-
-    if reviewer_id:
-        reviewer = review_lookup.get(str(reviewer_id))
-        reviewer_name = str(
-            (reviewer or {}).get("name")
-            or (reviewer or {}).get("display_name")
-            or (reviewer or {}).get("full_name")
-            or ""
-        ).strip()
-        if author_passed and reviewer and reviewer.get("active", False) and reviewer_name:
-            return {
-                "passed": True,
-                "source": "reviewers_json",
-                "author_name": reviewer_name,
-            }
-        return {
-            "passed": False,
-            "source": "reviewers_json",
-            "author_name": "",
-        }
-
     display_name = str(author_validation.get("display_name") or "").strip()
     if author_passed and display_name:
         return {
             "passed": True,
-            "source": "author_validation",
+            "source": "reviewers_json" if reviewer_id else "author_validation",
             "author_name": display_name,
         }
     return {
@@ -956,7 +941,12 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
     verified_from_html = not missing_html_types
 
     title_text = snapshot.title or next((item["text"] for item in snapshot.headings if item["level"] == 1), "")
-    question_heading_count = sum(1 for item in snapshot.headings if item["level"] in {2, 3} and item["text"].endswith("?"))
+    h2_headings = [item for item in snapshot.headings if item["level"] == 2]
+    question_heading_count = sum(1 for item in h2_headings if _looks_like_question_heading(item["text"]))
+    question_headings_passed = bool(h2_headings) and (
+        question_heading_count * 2 >= len(h2_headings)
+        or (question_heading_count >= 2 and len(h2_headings) >= 3)
+    )
     average_paragraph_words = sum(len(paragraph.split()) for paragraph in snapshot.paragraphs) / max(len(snapshot.paragraphs), 1)
     short_paragraph_ratio = (
         sum(len(paragraph.split()) <= 80 for paragraph in snapshot.paragraphs) / max(len(snapshot.paragraphs), 1)
@@ -979,7 +969,7 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
             str(((article.get("trust") or {}).get("published_at")) or ""),
             str(((article.get("trust") or {}).get("updated_at")) or ""),
         ]),
-        "question_headings": question_heading_count >= 2,
+        "question_headings": question_headings_passed,
         "atomic_paragraphs": short_paragraph_ratio >= 0.6 and average_paragraph_words <= 75,
         "inline_evidence": inline_evidence_passed,
         "semantic_html": len([item for item in snapshot.headings if item["level"] == 2]) >= 2 and (snapshot.table_count or snapshot.unordered_lists or snapshot.ordered_lists),
