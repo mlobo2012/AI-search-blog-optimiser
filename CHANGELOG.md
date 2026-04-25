@@ -2,6 +2,36 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.5.7] — 2026-04-25
+
+Bug-fix release driven by 2026-04-25 live test run on the Granola blog. Two parallel
+Codex agents (gpt-5.5, reasoning-effort high) executed the bug spec.
+
+### Fixed
+- **Bug 1 — crawler run-id discipline**: blog-crawler agent prompt tightened to forbid
+  calling register_run; must accept run_id from orchestrator prompt and abort on missing.
+  Prevents the duplicate-run / lost-Peec-association failure mode seen on 2026-04-25.
+- **Bug 3 — evidence artifact namespace**: extracted JSON_WRITE_NAMESPACES constant in
+  dashboard/server.py to keep write/read/list namespace lists in sync. The v0.5.6 source
+  already included  in both lists; this commit hardens that against drift.
+
+### Validated (no source change required)
+- **Bug 2 — evidence-builder agent registration**: plugin.json correctly omits an explicit
+  agents allow-list (auto-discovery), and agents/evidence-builder.md frontmatter is valid.
+  The earlier `Agent type not found` error was a stale Claude Code session-cache issue,
+  not a packaging defect. Acceptance test added under tests/.
+- **Bug 4 — validate_article tool**: v0.5.6 source already implements the tool at
+  dashboard/server.py:1694 (definition) / 2683 (impl) / 2843 (dispatcher). The earlier
+  `No validate_article tool exists` error was a stale v0.5.3 desktop bundle. Lane A's
+  initial Path B (self-rubric replacement) was reverted as it conflicted with the
+  controller-generated manifest design that the v0.5.6 source already supports.
+
+### Acceptance tests
+- tests/bug_01_crawler_run_id_discipline_test.md
+- tests/bug_02_evidence_builder_registered_test.md
+- tests/bug_03_evidence_namespace_test.md
+- tests/bug_04_validate_article_test.md
+
 ## [0.5.6] — 2026-04-23
 
 Crawl-state hardening release after live runs reported discovered articles that never persisted as host artifacts.
