@@ -31,8 +31,6 @@ Treat the absolute paths as host references only. Read and write the actual arte
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_json_artifact`
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_text_artifact`
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_draft_package`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__write_json_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__update_state`
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__fail_article_stage`
 
 ## Required reads
@@ -51,29 +49,6 @@ Use the same `40-point GEO audit` as the recommender, but evaluate the final dra
 
 The draft fails if any universal required module is missing, if any applicable conditional module is
 missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
-
-After writing draft files, compute the final rubric yourself and persist it as
-`optimised/{article_slug}.manifest.json`. The manifest is required draft truth and must contain:
-
-```json
-{
-  "audit_before": 0,
-  "audit_after": 0,
-  "breakdown": {
-    "universal_modules": {"score": 0, "max": 0, "checks": []},
-    "conditional_modules": {"score": 0, "max": 0, "checks": []},
-    "trust_evidence": {"score": 0, "max": 0, "checks": []},
-    "schema_entities": {"score": 0, "max": 0, "checks": []}
-  },
-  "quality_gate": "pass",
-  "implemented_modules": [],
-  "missing_required_modules": [],
-  "blocking_issues": []
-}
-```
-
-Set `quality_gate` to `"pass"` only when `audit_after >= 32` and there are no missing required
-modules or blocking trust, evidence, schema, or scope checks. Otherwise set it to `"fail"`.
 
 ## Procedure
 
@@ -108,16 +83,10 @@ modules or blocking trust, evidence, schema, or scope checks. Otherwise set it t
    - `diff_markdown`
    - `handoff_markdown`
    - optional `audit_after`
-12. Compute the self-rubric scorecard from the final markdown, HTML, schema, evidence pack, and
-    recommendations.
-13. Write the manifest JSON to `optimised/{article_slug}.manifest.json` with `write_json_artifact`.
-14. Update `state.json` with `update_state` so `articles[].stages.draft.audit_after` matches the
-    manifest and `articles[].stages.draft.quality_gate` is `"passed"` for manifest `"pass"` and
-    `"failed"` for manifest `"fail"`.
-15. Scope drift is a hard failure. If the rewrite pivots to a new topic, prompt family, or entity set,
-    mark the manifest `"fail"` and record the blocker in `blocking_issues`.
-
-Never write top-level `stages`. Never write `articles` as an object map keyed by slug. Use `completed`, not `complete`. Never mark top-level `pipeline.draft` from a single-article generator; the manifest and main session own draft truth. Never use top-level article keys like `draft_status`, `status`, or `quality_gate` as substitutes for `articles[].stages.draft`.
+12. The manifest must be controller-generated, not self-reported. Do not write `optimised/{article_slug}.manifest.json` yourself.
+13. Trust the returned validator status as authoritative. Do not push a conflicting draft status.
+14. Scope drift is a hard failure. If the rewrite pivots to a new topic, prompt family, or entity set, the controller should block it.
+Never write top-level `stages`. Never write `articles` as an object map keyed by slug. Use `completed`, not `complete`. Never mark top-level `pipeline.draft` from a single-article generator; the validator and main session own draft truth. Never use top-level article keys like `draft_status`, `status`, or `quality_gate` as substitutes for `articles[].stages.draft`.
 
 ## Output
 
@@ -132,8 +101,7 @@ Return at most 300 tokens:
 - Never use artifact tools for bundled plugin files. Use `read_bundle_text` for `skills/...` and
   `references/...`.
 - Never use `Read`, `Write`, or `Bash` on host absolute paths.
-- The orchestrator does not call a separate server-side quality gate for this stage; your manifest
-  and `articles[].stages.draft` update are the draft truth.
+- Do not self-mark a passing draft. `record_draft_package` owns validator-backed draft truth.
 - Never ship a draft below 32/40 without marking it failed or partial.
 - The manifest must declare implemented modules and missing required modules.
 - The draft cannot pass purely on structure if authorship, evidence density, or schema/entity
