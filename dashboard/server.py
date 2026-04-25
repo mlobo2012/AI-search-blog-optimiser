@@ -2575,6 +2575,119 @@ def _apply_internal_link_domain_fix(run_dir: Path, article_slug: str, manifest: 
     _refresh_quality_status(manifest)
 
 
+def _name_tokens(name: str) -> list[str]:
+    return re.findall(r"[A-Za-z][A-Za-z'-]+", name or "")
+
+
+def _has_first_and_last_name(name: str) -> bool:
+    return len(_name_tokens(name)) >= 2
+
+
+def _reviewer_name_matches_author(reviewer: dict[str, Any], author_name: str) -> bool:
+    normalized_author = " ".join(_name_tokens(author_name)).lower()
+    if not normalized_author:
+        return False
+    for key in ("full_name", "name", "display_name"):
+        reviewer_name = " ".join(_name_tokens(str(reviewer.get(key) or ""))).lower()
+        if reviewer_name and reviewer_name == normalized_author:
+            return True
+    return False
+
+
+def _remove_first_matching(values: list[Any], predicate: Any) -> list[Any]:
+    removed = False
+    kept: list[Any] = []
+    for value in values:
+        if not removed and predicate(value):
+            removed = True
+            continue
+        kept.append(value)
+    return kept
+
+
+def _apply_trust_author_fallback(run_dir: Path, article_slug: str, manifest: dict[str, Any]) -> None:
+    state = _load_state(run_dir / "state.json")
+    output_paths = _output_paths(run_dir)
+    article = _read_json(output_paths["articles_dir"] / f"{article_slug}.json")
+    if not isinstance(article, dict):
+        return
+
+    author = (article.get("trust") or {}).get("author") or {}
+    if not isinstance(author, dict):
+        author = {}
+    author_name = str(author.get("name") or "").strip()
+    site_key = str(state.get("site_key") or "")
+    site_dir = Path((state.get("outputs") or {}).get("site_dir") or _site_paths(site_key)["site_dir"])
+    reviewers = _read_json(site_dir / "reviewers.json")
+    if not isinstance(reviewers, list):
+        reviewers = []
+
+    matching_reviewer = next(
+        (
+            item for item in reviewers
+            if isinstance(item, dict)
+            and item.get("active", True)
+            and _reviewer_name_matches_author(item, author_name)
+        ),
+        None,
+    )
+    trust_block = manifest.setdefault("trust_block", {})
+    if not isinstance(trust_block, dict):
+        trust_block = {}
+        manifest["trust_block"] = trust_block
+
+    if matching_reviewer:
+        trust_block.update({
+            "passed": True,
+            "source": "reviewers_json",
+            "author_name": author_name,
+        })
+        return
+
+    if reviewers or not _has_first_and_last_name(author_name):
+        trust_block.update({
+            "passed": False,
+            "source": "reviewers_json" if reviewers else None,
+            "author_name": author_name,
+        })
+        return
+
+    author_validation = manifest.setdefault("author_validation", {})
+    previous_detail = ""
+    if isinstance(author_validation, dict):
+        previous_detail = str(author_validation.get("detail") or "")
+        author_validation.update({
+            "status": "passed",
+            "display_name": author_name,
+            "display_role": str(author.get("role") or author_validation.get("display_role") or "").strip(),
+            "detail": f"{author_name} is accepted from the article author fallback because site reviewers.json is empty.",
+            "source": "article_author_fallback",
+        })
+
+    trust_block.update({
+        "passed": True,
+        "source": "article_author_fallback",
+        "author_name": author_name,
+    })
+
+    missing = manifest.get("missing_required_modules")
+    if isinstance(missing, list) and "trust_block" in missing:
+        manifest["missing_required_modules"] = [item for item in missing if item != "trust_block"]
+    implemented = manifest.setdefault("implemented_modules", [])
+    if isinstance(implemented, list) and "trust_block" not in implemented:
+        implemented.append("trust_block")
+        implemented.sort()
+
+    quality_gate = manifest.get("quality_gate") or {}
+    blocking = quality_gate.get("blocking_issues")
+    if isinstance(blocking, list):
+        quality_gate["blocking_issues"] = _remove_first_matching(
+            blocking,
+            lambda issue: isinstance(issue, str) and bool(previous_detail) and issue == previous_detail,
+        )
+    _refresh_quality_status(manifest)
+
+
 def _tool_record_voice_baseline(args: dict) -> dict:
     run_id = args["run_id"]
     markdown = str(args["markdown"])
@@ -2838,6 +2951,7 @@ def _tool_validate_article(args: dict) -> dict:
     with STATE_LOCK:
         manifest = build_article_manifest(run_dir, article_slug, audit_after=args.get("audit_after"))
         _apply_internal_link_domain_fix(run_dir, article_slug, manifest)
+        _apply_trust_author_fallback(run_dir, article_slug, manifest)
         _persist_manifest_and_update_draft_state(run_dir, article_slug, manifest)
     return manifest
 
