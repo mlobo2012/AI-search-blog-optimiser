@@ -47,6 +47,10 @@ try:
     from dashboard.quality_gate import build_article_manifest
 except ImportError:
     from quality_gate import build_article_manifest
+try:
+    from dashboard.rubric_lint import lint_article
+except ImportError:
+    from rubric_lint import lint_article
 
 # ---------------------------------------------------------------------------
 # Paths + state
@@ -332,6 +336,7 @@ def _output_paths(run_dir: Path) -> dict[str, Path]:
         "articles_dir": outputs_dir / "articles",
         "evidence_dir": outputs_dir / "evidence",
         "recommendations_dir": outputs_dir / "recommendations",
+        "rubric_dir": outputs_dir / "rubric",
         "optimised_dir": outputs_dir / "optimised",
         "media_dir": outputs_dir / "media",
         "raw_dir": outputs_dir / "raw",
@@ -407,6 +412,7 @@ ARTIFACT_NAMESPACES = [
     "articles",
     "evidence",
     "recommendations",
+    "rubric",
     "optimised",
     "raw",
     "gaps",
@@ -420,6 +426,7 @@ JSON_WRITE_NAMESPACES = [
     "articles",
     "evidence",
     "recommendations",
+    "rubric",
     "optimised",
     "gaps",
     "competitors",
@@ -442,6 +449,7 @@ def _artifact_base_dir(run_id: str, namespace: str) -> Path:
         "articles": output_paths["articles_dir"],
         "evidence": output_paths["evidence_dir"],
         "recommendations": output_paths["recommendations_dir"],
+        "rubric": output_paths["rubric_dir"],
         "optimised": output_paths["optimised_dir"],
         "raw": output_paths["raw_dir"],
         "gaps": output_paths["gaps_dir"],
@@ -1625,6 +1633,18 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "rubric_lint",
+        "description": "Run deterministic GEO rubric lint for one article, write rubric/{slug}.json, and refresh articles[].stages.rubric_lint.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article_slug": {"type": "string"},
+            },
+            "required": ["run_id", "article_slug"],
+        },
+    },
+    {
         "name": "record_voice_baseline",
         "description": "Atomically write the site-scoped brand voice baseline and refresh pipeline.voice plus state.voice.",
         "inputSchema": {
@@ -2353,6 +2373,68 @@ def _tool_record_evidence_pack(args: dict) -> dict:
         "relative_path": f"{article_slug}.json",
         "absolute_path": str(evidence_path),
     }
+
+
+def _tool_rubric_lint(args: dict) -> dict:
+    run_id = args["run_id"]
+    article_slug = args["article_slug"]
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    output_paths = _output_paths(run_dir)
+    article_path = output_paths["articles_dir"] / f"{article_slug}.json"
+    article = _read_json(article_path)
+    if not isinstance(article, dict):
+        raise ValueError(f"Article artifact not found or invalid: articles/{article_slug}.json")
+
+    evidence = _read_json(output_paths["evidence_dir"] / f"{article_slug}.json")
+    if not isinstance(evidence, dict):
+        evidence = {}
+
+    state_path = run_dir / "state.json"
+    state = _load_state(state_path)
+    site_key = str(state.get("site_key") or "")
+    site_dir = Path((state.get("outputs") or {}).get("site_dir") or _site_paths(site_key)["site_dir"])
+    voice_meta = _read_json(site_dir / "voice.json")
+    if not isinstance(voice_meta, dict):
+        voice_meta = {}
+
+    items = lint_article(article, evidence, voice_meta)
+    total = 13
+    failed = len(items)
+    passed = max(total - failed, 0)
+    payload = {
+        "article_slug": article_slug,
+        "run_id": run_id,
+        "generated_at": _now_iso(),
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "items": items,
+    }
+    rubric_path = output_paths["rubric_dir"] / f"{article_slug}.json"
+    with STATE_LOCK:
+        _write_json(rubric_path, payload)
+        state = _load_state(state_path)
+        _deep_merge(state, {
+            "articles": [
+                {
+                    "slug": article_slug,
+                    "stages": {
+                        "rubric_lint": {
+                            "status": "completed",
+                            "total": total,
+                            "passed": passed,
+                            "failed": failed,
+                        }
+                    },
+                }
+            ]
+        })
+        _refresh_pipeline_aggregates(state)
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {"total": total, "passed": passed, "failed": failed}
 
 
 def _tool_record_recommendations(args: dict) -> dict:
@@ -3097,6 +3179,7 @@ TOOL_DISPATCH = {
     "write_text_artifact": _tool_write_text_artifact,
     "write_json_artifact": _tool_write_json_artifact,
     "record_evidence_pack": _tool_record_evidence_pack,
+    "rubric_lint": _tool_rubric_lint,
     "record_recommendations": _tool_record_recommendations,
     "record_voice_baseline": _tool_record_voice_baseline,
     "record_peec_gap": _tool_record_peec_gap,
