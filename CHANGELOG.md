@@ -2,6 +2,35 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.5.8] — 2026-04-25
+
+Iteration 2 bug-fix release. Driven by the v0.5.7 live smoke against the Granola
+blog where both articles failed quality_gate on legitimate generator+validator
+contract gaps. Two parallel Codex agents (gpt-5.5, reasoning-effort high) on
+isolated worktrees executed the iteration-2 spec.
+
+### Generator output (Lane E)
+- **Bug 5** — embed JSON-LD inside the rendered HTML in a
+  `<script type="application/ld+json">` block, not just as a side artefact.
+  The standalone schema.json file remains; the embedded copy is the
+  source of truth for `validate_article`'s `schema_checks.passed_embedded_jsonld`.
+- **Bug 7** — render FAQ blocks as `<dl><dt>question</dt><dd>answer</dd></dl>`
+  definition lists so the validator can extract `faq_questions_visible`.
+
+### Validator strictness (Lane F)
+- **Bug 6** — internal-link host check now accepts `*.<site_key>` subdomains
+  (e.g. `docs.granola.ai` and `app.granola.ai` count as internal for `granola.ai`).
+- **Bug 8** — when `site/reviewers.json` is empty AND the article author has
+  at least a first + last name, the trust block falls back to the article
+  author with `trust_block.source = "article_author_fallback"`. Single-name
+  authors still fail the trust block.
+
+### Acceptance tests
+- tests/bug_05_jsonld_embedded_in_html_test.md
+- tests/bug_06_internal_link_domain_test.md
+- tests/bug_07_faq_visible_test.md
+- tests/bug_08_trust_block_author_fallback_test.md
+
 ## [0.5.7] — 2026-04-25
 
 Bug-fix release driven by 2026-04-25 live test run on the Granola blog. Two parallel
