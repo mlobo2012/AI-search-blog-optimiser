@@ -93,10 +93,34 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
 10. Populate `rec_implementation_map` after the schema package is complete:
    - Iterate over every item in `recommendations.recommendations`.
    - Write one entry per rec id into `rec_implementation_map`.
-   - For implemented recs, set `implemented: true` and include `section`, `anchor`, and at least
-     one of `schema_fields[]` or `evidence_inserted[]`.
-   - For non-applicable recs, set `implemented: false` and `reason` to one of:
-     `non-applicable`, `superseded_by_<rec_id>`, or `data_missing`.
+   - The map MUST follow this exact JSON shape:
+     ```json
+     {
+       "rec-001": {
+         "implemented": true,
+         "section": "<section_id_or_h2_anchor>",
+         "anchor": "<HTML_anchor_or_heading_text>",
+         "schema_fields": ["meta.description", "ld.FAQPage"],
+         "evidence_inserted": ["peec_prompt_pr_xxx", "peec_signal_engine_pattern_asymmetry"],
+         "notes": "<one-line summary of what the generator did>"
+       },
+       "rec-002": {
+         "implemented": false,
+         "reason": "non-applicable"
+       }
+     }
+     ```
+   - The field name is `implemented` and its value is BOOLEAN (`true` or `false`).
+   - For `implemented: true` entries, `section`, `anchor`, AND at least one of
+     `schema_fields[]` or `evidence_inserted[]` are required. `notes` is optional but
+     recommended.
+   - For `implemented: false` entries, `reason` is required and MUST be one of:
+     `"non-applicable"`, `"superseded_by_<rec_id>"`, or `"data_missing"`. No other reason
+     values are accepted.
+   - Do NOT use the field name 'status' or 'note' for rec_implementation_map entries. The field is
+     'implemented' (boolean) and entries must follow the exact shape above. The validator
+     (`dashboard/quality_gate.py`) rejects any entry with a different shape and the article fails
+     the quality gate.
    - Critical LLM-source recs must never be omitted. If a critical LLM-source rec cannot be
      implemented and none of the three reasons is honest, call `fail_article_stage`.
    - Rubric-source recs still receive entries, but a non-applicable reason is acceptable when the
