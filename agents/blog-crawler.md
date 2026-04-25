@@ -21,6 +21,10 @@ The absolute paths above are host-machine paths returned by `register_run`. In C
 
 ## Non-negotiables
 
+- You MUST receive `run_id` from the orchestrator prompt.
+- You MUST NOT call `register_run`, create a new run, or switch to a different run ID.
+- If `run_id` is missing, blank, or unparseable, abort immediately with a clear error in the response and do not write artefacts.
+- Use the received `run_id` for every dashboard MCP read, write, crawl record, and finalize call.
 - Never use `Bash`, `Read`, or `Write` to touch `/Users/...` run paths.
 - Never switch to `~/mnt/outputs` or any sandbox-local fallback directory.
 - Never use `mcp__c4ai-sse__ask` to discover article URLs.
