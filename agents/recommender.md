@@ -158,6 +158,10 @@ positioning sentence, not a keyword cluster. When 3 or more prompts share a clea
 - add a top-level `synthesis_claims[]` entry with `claim`, `addresses_prompts`, `section_target`,
   and `evidence_refs`
 - emit one LLM-source rec with `category: "claim_synthesis"`
+- When you emit a `category: "claim_synthesis"` recommendation, you MUST ALSO add a corresponding
+  entry to top-level `synthesis_claims[]` with the same `addresses_prompts` array, the synthesised
+  `claim` sentence, the `section_target`, and `evidence_refs`. The two write paths must be paired —
+  one without the other is a contract violation.
 - include `claim`, `addresses_prompts` (3+ prompt ids), `prompt_visibility`, and any other signals
   from the cluster
 
