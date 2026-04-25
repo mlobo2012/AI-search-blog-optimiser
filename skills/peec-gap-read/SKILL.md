@@ -1,7 +1,7 @@
 ---
 name: peec-gap-read
 description: Canonical recipe for reading a brand's gap data from the Peec AI MCP for a specific article. Use when you need to produce the evidence trail that grounds a GEO recommendation in live AI citation behaviour. Consumed by the peec-gap-reader sub-agent and directly by the recommender when running single-article analysis.
-version: 0.1.2
+version: 0.1.3
 ---
 
 # Peec Gap Read Recipe
@@ -36,6 +36,8 @@ From the Peec MCP server instructions:
 - **Cite date range** (`date_range` field in responses).
 - **Gap filter** on `get_domain_report` finds sources where competitors are cited but the user isn't. This is the remediation roadmap.
 - **Never use a universal citation-rate threshold** — per-engine benchmarks diverge 4×.
+- **Locked gap schema**: every emitted gap artefact must conform to the v0.6.0 schema. Do not
+  rename fields to match ad hoc Peec response names.
 
 ## Per-article recipe
 
@@ -80,6 +82,9 @@ If fewer than 3 match:
 - accept the sparse match if it is still the best evidence available
 - note it explicitly via `notes: "sparse prompt match: only {N} prompts matched"`
 
+If zero prompts match, continue to section 6 before writing. A zero-prompt article can still produce
+`match_mode: "topic-level"` when topic-level signals are available.
+
 ### 4. Per-prompt reports
 
 For each matched prompt, run:
@@ -97,6 +102,35 @@ For each matched prompt, run:
 → competitor URLs cited for this prompt where the own brand isn't, per engine.
 ```
 
+Normalize the brand block before writing:
+
+- Always include `visibility_per_engine`, `sov_per_engine`, `position_per_engine`,
+  `sentiment_per_engine`, and `citation_score_per_engine` under `brand`.
+- For every engine returned by Peec for the prompt, include all five per-engine metric keys. Use
+  `null` for unavailable values; never omit `position_per_engine`, `sentiment_per_engine`, or
+  `citation_score_per_engine`.
+- If Peec returns no engine rows for a prompt, emit the five empty metric objects and add a
+  cold-start note.
+- Use `citation_score_per_engine` for brand citation score. Use `citation_rate_per_engine` only for
+  cited competitor domain rates.
+
+Classify cited competitors before writing:
+
+```
+<connected-peec>__list_brands(project_id=<peec_project_id>, is_own=false)
+```
+
+Every `cited_competitors[]` entry requires `classification` in this enum:
+`COMPETITOR | EDITORIAL | CORPORATE | UGC | REFERENCE`.
+
+Classification precedence:
+
+- Use Peec's returned classification when it is present and in the enum.
+- Domains returned by `list_brands(is_own=false)` are `COMPETITOR`.
+- Domains whose registrable root or TLD does not match a tracked competitor brand default to
+  `EDITORIAL`.
+- Preserve Peec-returned `CORPORATE`, `UGC`, or `REFERENCE` values.
+
 If `citation_score=null` or `visibility=null`, the prompt has no data yet. Record as cold-start. Do not infer rates.
 
 ### 5. Pull the actual AI responses (the "oh wow" moment)
@@ -105,15 +139,26 @@ If `citation_score=null` or `visibility=null`, the prompt has no data yet. Recor
 <connected-peec>__list_chats(prompt_id=<id>) → recent responses across engines.
 ```
 
-Filter for the top 3 chats where:
+Sort matched prompts by severity: `engines_lost.length >= 2`, then lowest visibility, then strongest
+competitor citation signal. For the top 2 prompts where `engines_lost.length >= 2`, chat evidence is
+mandatory.
+
+Filter for chats where:
 - Competitor domains appeared
 - The own brand's domain did NOT appear
+- The chat is from a lost engine when possible
 
 ```
 <connected-peec>__get_chat(chat_id=<id>) → full response text.
 ```
 
-Extract a 100–200 character excerpt showing the cited competitor text. This is the raw evidence that makes recommendations credible.
+Extract verbatim excerpts showing the cited competitor text. Each excerpt must be 200 characters or
+shorter. This is the raw evidence that makes recommendations credible.
+
+For each of the top 2 high-loss prompts, `top_gap_chats[]` must contain at least one entry with
+`chat_id`, `engine`, `excerpt`, and `cited_urls`. If Peec returns no usable chats after checking
+available recent chats, do not fabricate. Mark the gap read inadmissible and name the missing prompt
+in `blocker_reason` instead of silently writing an empty `top_gap_chats[]`.
 
 ### 6. Peec Actions (native remediation)
 
@@ -131,12 +176,41 @@ Reason:
   useful gap read into an avoidable runtime failure
 
 Record the strongest overview opportunities and let the recommender combine them with the rest of
-the article, evidence, and Schmidt-rule analysis.
+the article, evidence, and Schmidt-rule analysis. When the project has any actions data,
+`peec_actions.overview_top_opportunities` is required and must contain at least 3 entries if Peec
+returns 3 or more. Prefer the top 6 entries.
+
+### 6a. Topic-level fallback for zero prompt matches
+
+When `matched_prompts.length == 0`, pull the broader signal stack before writing:
+
+```
+<connected-peec>__get_actions(scope=overview)
+<connected-peec>__get_domain_report(project_id=<peec_project_id>, gap filter)
+<connected-peec>__get_brand_report(project_id=<peec_project_id> or topic_id=<matched_topic_id>)
+```
+
+Use the connected tool's supported arguments; some Peec installs expose project-level and topic-level
+reports through the same suffix with different parameters.
+
+Write:
+
+- `match_mode: "topic-level"`
+- `topic_level_signals.category_gap`: strongest overview action, preferring `OWNED`.
+- `topic_level_signals.surface_gap`: strongest non-owned overview action, preferring `EDITORIAL`.
+- `topic_level_signals.dominant_competitor_domains[]`: highest source-domain gap domains with
+  `domain` and `classification`.
+- `topic_level_signals.engine_sentiment`: engine-level sentiment from topic-level brand report when
+  available, otherwise project-level brand report.
+
+If neither prompt-level nor topic-level evidence is available, write `match_mode: "none"` and mark
+the gap read inadmissible with a specific blocker.
 
 ### 7. Output shape
 
 ```json
 {
+  "article_slug": "<slug>",
   "match_mode": "prompt-first",
   "matched_topics": [
     {"topic_id": "", "topic_name": ""}
@@ -147,28 +221,65 @@ the article, evidence, and Schmidt-rule analysis.
       "prompt_text": "",
       "match_reasons": [],
       "brand": {
-        "visibility_per_engine": {"chatgpt": 0.12, "perplexity": 0.0},
+        "visibility_per_engine": {"chatgpt-scraper": 0.12, "perplexity-scraper": 0.0},
         "sov_per_engine": {},
-        "position_per_engine": {},
-        "citation_score_per_engine": {},
-        "sentiment_per_engine": {}
+        "position_per_engine": {"chatgpt-scraper": null, "perplexity-scraper": null},
+        "sentiment_per_engine": {"chatgpt-scraper": null, "perplexity-scraper": null},
+        "citation_score_per_engine": {"chatgpt-scraper": null, "perplexity-scraper": null}
       },
-      "engines_lost": ["perplexity", "chatgpt"],
+      "engines_lost": ["perplexity-scraper", "chatgpt-scraper"],
       "cited_competitors": [
-        {"domain": "otter.ai", "urls": [...], "cite_rate_per_engine": {"chatgpt": 2.1}}
+        {
+          "domain": "otter.ai",
+          "classification": "COMPETITOR",
+          "citation_rate_per_engine": {"chatgpt-scraper": 2.1}
+        }
       ],
       "top_gap_chats": [
-        {"chat_id":"", "engine":"chatgpt", "excerpt":"<verbatim text ≤200 chars>", "cited_urls":[]}
-      ]
+        {"chat_id": "", "engine": "chatgpt-scraper", "excerpt": "<verbatim text ≤200 chars>", "cited_urls": []}
+      ],
+      "notes": ""
     }
   ],
+  "gap_domains": {
+    "top_competitor_cited_domains": [
+      {
+        "domain": "techsifted.com",
+        "classification": "EDITORIAL",
+        "citation_rate": 2.75,
+        "retrieval_count": 4,
+        "citation_count": 11
+      }
+    ]
+  },
+  "topic_level_signals": {
+    "category_gap": {"action_group_type": "OWNED", "url_classification": "LISTICLE", "gap_percentage": 100, "coverage_percentage": 0, "opportunity_score": 0.27},
+    "surface_gap": {"action_group_type": "EDITORIAL", "url_classification": "LISTICLE", "gap_percentage": 62.7, "coverage_percentage": 37.3, "opportunity_score": 0.13},
+    "dominant_competitor_domains": [{"domain": "techsifted.com", "classification": "EDITORIAL"}],
+    "engine_sentiment": {"chatgpt-scraper": 64, "perplexity-scraper": 71, "google-ai-overview-scraper": 79}
+  },
   "peec_actions": {
-    "overview_top_opportunities": []
+    "overview_top_opportunities": [
+      {"action_group_type": "OWNED", "url_classification": "LISTICLE", "opportunity_score": 0.27, "gap_percentage": 100, "coverage_percentage": 0, "note": ""}
+    ]
   },
   "data_freshness": "YYYY-MM-DD",
+  "date_range": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},
   "notes": ""
 }
 ```
+
+Schema hardening checklist before `record_peec_gap`:
+
+- `matched_prompts[].brand.position_per_engine` is present.
+- `matched_prompts[].brand.sentiment_per_engine` is present.
+- `matched_prompts[].brand.citation_score_per_engine` is present.
+- `matched_prompts[].cited_competitors[].classification` is present and in the fixed enum.
+- At least 2 prompts with `engines_lost.length >= 2` have non-empty `top_gap_chats[]` when at
+  least 2 such prompts exist.
+- `topic_level_signals` is present and non-empty when `matched_prompts.length == 0`.
+- `peec_actions.overview_top_opportunities` has at least 3 entries when Peec returned any actions
+  data.
 
 ## Cold-start handling
 
