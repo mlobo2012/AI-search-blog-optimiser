@@ -71,6 +71,21 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
    - Make the schema package match the visible page and include the required core entities:
      `Organization`, `Person` when valid, page-type schema, and `BreadcrumbList` for standard
      article pages. If an FAQ block exists, the FAQ schema must match it.
+   - Embed the canonical schema object in the rendered HTML `<head>` as at least one
+     `<script type="application/ld+json">...</script>` block. The embedded JSON-LD must be the
+     same content sent as the standalone `schema` package; the standalone `schema.json` artefact
+     remains required for downstream tooling, but the embedded HTML copy is the source of truth for
+     validation.
+   - Multiple schema types may be combined in one JSON-LD block with `@graph` or split across
+     multiple `application/ld+json` blocks. In either form, the JSON inside each script tag must be
+     valid JSON, not Markdown or JavaScript.
+   - Any visible FAQ section must use definition-list markup:
+     `<dl>` containing one `<dt>` question and one following `<dd>` answer for each FAQ item. Do
+     not render FAQ questions as heading tags followed by paragraphs.
+   - If the recommendations do not explicitly require an FAQ, you may add one when the
+     recommendations contain at least 3 distinct user-question patterns such as "How do I...",
+     "What is...", or "Can <brand>...". When you add a visible FAQ, the FAQPage schema questions
+     must exactly match the visible `<dt>` question text.
    - Include at least `internal_link_plan.minimum_internal_links` contextual internal links.
    - Include a visible reviewer block with full name, role, published date, updated/reviewed date, and a one-line evidence basis.
    - Prefer a retrieval-oriented title/H1 when the source title is too launch-like to win the
@@ -87,6 +102,80 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
 13. Trust the returned validator status as authoritative. Do not push a conflicting draft status.
 14. Scope drift is a hard failure. If the rewrite pivots to a new topic, prompt family, or entity set, the controller should block it.
 Never write top-level `stages`. Never write `articles` as an object map keyed by slug. Use `completed`, not `complete`. Never mark top-level `pipeline.draft` from a single-article generator; the validator and main session own draft truth. Never use top-level article keys like `draft_status`, `status`, or `quality_gate` as substitutes for `articles[].stages.draft`.
+
+## HTML Schema Example
+
+Every HTML draft must include JSON-LD in the `<head>` before body content. Use this exact pattern,
+with the real schema content substituted:
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Article title</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "Article title",
+    "author": {
+      "@type": "Person",
+      "name": "Full Name"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Brand name"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://www.example.com/blog/article-title"
+    },
+    "breadcrumb": {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "Blog",
+          "item": "https://www.example.com/blog"
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Article title",
+          "item": "https://www.example.com/blog/article-title"
+        }
+      ]
+    }
+  }
+  </script>
+</head>
+<body>
+  <article>
+    <h1>Article title</h1>
+  </article>
+</body>
+</html>
+```
+
+## FAQ Markup Example
+
+Use this structure for every FAQ block so the validator can extract visible questions:
+
+```html
+<section aria-labelledby="faq-heading">
+  <h2 id="faq-heading">FAQ</h2>
+  <dl>
+    <dt>How do I use the product for meeting notes?</dt>
+    <dd>Use the product during a meeting, then review and share the generated notes with the team.</dd>
+    <dt>What makes the workflow different from a transcript?</dt>
+    <dd>The workflow turns discussion into structured notes, decisions, and follow-up context.</dd>
+    <dt>Can the product support recurring team rituals?</dt>
+    <dd>Yes. Use the same workspace and internal links to keep recurring rituals connected.</dd>
+  </dl>
+</section>
+```
 
 ## Output
 
