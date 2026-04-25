@@ -2,6 +2,51 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.6.1] — 2026-04-25
+
+Iteration 4 bug fixes from the v0.6.0 smoke run `2026-04-25T19-21-10`. The
+v0.6.0 architecture (rubric_lint stage, framing block, trigger-driven rec
+categories, manifest cross-validation) is working — both articles passed
+quality_gate at audit_after 34/40 — but the smoke surfaced 3 cleanup bugs
+that v0.6.1 closes. Two parallel Codex agents (gpt-5.5, reasoning-effort
+high).
+
+### Lane E — recommender + record_recommendations seam
+- **Bug 11** — recommender now writes a top-level `synthesis_claims[]` entry
+  alongside every `category: "claim_synthesis"` recommendation. The two
+  write paths are paired: one without the other is a contract violation.
+  Threshold aligned at ≥3 prompts (matching Improvement 4) — the v0.6.0
+  seam check incorrectly used ≥4. `record_recommendations` now enforces:
+  every claim_synthesis rec's `addresses_prompts` array MUST appear in at
+  least one `synthesis_claims[].addresses_prompts`. On failure: warning
+  banner + ValueError + recommender retries.
+
+### Lane F — validator (dashboard/quality_gate.py)
+- **Bug 12** — `validate_article.audit_after` now returns an integer in
+  `[0, 40]` whenever module checks pass. The numeric scoring path was
+  silently returning null when one of the sub-score inputs was unavailable
+  for an article preset. Sub-scores now default to ZERO when their input is
+  missing; missing-critical-input cases raise a specific error rather than
+  null-coalescing. Regression-tested against the v0.6.0 smoke output for
+  granola-chat-just-got-smarter (was null, now an integer ≥ 32).
+- **Bug 13** — `trust_block` validator path consolidated with
+  `author_validation`. When `reviewer_id == null` AND
+  `author_validation.status == "passed"`,
+  `trust_block.author_name = author_validation.display_name` and
+  `trust_block.passed = true`. The two paths can no longer disagree on
+  whether an author exists. The series-c case (full-name "Chris Pedregal"
+  with `reviewer_id: null` failing trust_block while passing
+  author_validation) is fixed.
+
+### Acceptance tests
+- tests/bug_11_synthesis_claims_pair_test.md (Lane E)
+- tests/bug_12_audit_after_numeric_test.md (Lane F)
+- tests/bug_13_trust_block_author_consistency_test.md (Lane F)
+
+### Origin
+v0.6.0 smoke run `2026-04-25T19-21-10`. Spec at
+`specs/2026-04-25-bugs-iteration4.md`.
+
 ## [0.6.0] — 2026-04-25
 
 Peec MCP recommendation engine overhaul. v0.5.9 closed the bug-fix loop with
