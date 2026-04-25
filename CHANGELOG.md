@@ -2,6 +2,27 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.5.9] — 2026-04-25
+
+Iteration 3 bug-fix release. v0.5.8 smoke landed both articles' audit_after >= 32
+but `quality_gate` still failed on two specific edge cases. This closes them.
+
+### Validator (Lane G)
+- **Bug 9** — `_HTMLSnapshotParser` in `dashboard/quality_gate.py` now extracts
+  FAQ questions from `<dl><dt>` definition lists in addition to `<h1>-<h3>`
+  headings. Generator's v0.5.8 FAQ-as-definition-list output is now visible to
+  the validator (previously `faq_questions_visible: []` despite valid `<dl>`
+  markup in the rendered HTML).
+- **Bug 10** — `_validate_author` accepts single-name authors (e.g. "Jack" on
+  engineering posts) when `trust.author.role` is populated with a substantive
+  role (>= 4 chars, not a stop-word). Single name without a role still fails;
+  full-name authors continue to pass without a role per Bug 8's existing
+  fallback.
+
+### Acceptance tests
+- tests/bug_09_dt_faq_extraction_test.md
+- tests/bug_10_single_name_with_role_trust_test.md
+
 ## [0.5.8] — 2026-04-25
 
 Iteration 2 bug-fix release. Driven by the v0.5.7 live smoke against the Granola
