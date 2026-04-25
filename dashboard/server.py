@@ -2839,6 +2839,7 @@ def _refresh_quality_status(manifest: dict[str, Any]) -> None:
     quality_gate["missing_required_modules"] = missing
     quality_gate["blocking_issues"] = blocking
     quality_gate["status"] = "passed" if not missing and not blocking else "failed"
+    quality_gate["passed"] = quality_gate["status"] == "passed"
 
 
 def _apply_internal_link_domain_fix(run_dir: Path, article_slug: str, manifest: dict[str, Any]) -> None:
