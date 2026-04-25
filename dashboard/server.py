@@ -38,9 +38,10 @@ import traceback
 import urllib.request
 import webbrowser
 from datetime import datetime, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 try:
     from dashboard.quality_gate import build_article_manifest
@@ -292,6 +293,18 @@ def _site_key_from_blog_url(blog_url: str) -> str:
     if not parsed.hostname:
         raise ValueError(f"Invalid blog URL: {blog_url}")
     return _slugify_site_key(parsed.hostname)
+
+
+def _is_internal_host(host: str, site_key: str) -> bool:
+    if not host or not site_key:
+        return False
+    normalized_host = host.strip().lower().rstrip(".")
+    normalized_site = site_key.strip().lower().rstrip(".")
+    if normalized_host.startswith("www."):
+        normalized_host = normalized_host[4:]
+    if normalized_site.startswith("www."):
+        normalized_site = normalized_site[4:]
+    return normalized_host == normalized_site or normalized_host.endswith("." + normalized_site)
 
 
 def _site_paths(site_key: str) -> dict[str, Path]:
@@ -2426,6 +2439,142 @@ def _persist_manifest_and_update_draft_state(run_dir: Path, article_slug: str, m
     return manifest_path
 
 
+class _HrefParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hrefs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "a":
+            return
+        for name, value in attrs:
+            if name.lower() == "href" and value:
+                self.hrefs.append(value)
+                return
+
+
+def _canonicalize_validator_url(url: str, base_url: str | None = None) -> str:
+    if not url:
+        return ""
+    resolved = urljoin(base_url or "", url)
+    parsed = urlparse(resolved)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    path = parsed.path or "/"
+    if path != "/" and path.endswith("/"):
+        path = path[:-1]
+    return urlunparse(parsed._replace(
+        scheme=parsed.scheme.lower(),
+        netloc=parsed.netloc.lower(),
+        path=path,
+        params="",
+        query="",
+        fragment="",
+    ))
+
+
+def _dedupe_ordered(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _count_internal_links_for_site(html_text: str, article_url: str, site_key: str) -> tuple[int, list[str]]:
+    parser = _HrefParser()
+    parser.feed(html_text)
+    article_canonical = _canonicalize_validator_url(article_url)
+    internal_links: list[str] = []
+    for raw_href in parser.hrefs:
+        href = _canonicalize_validator_url(raw_href, article_url)
+        if not href:
+            continue
+        host = urlparse(href).hostname or ""
+        if not _is_internal_host(host, site_key):
+            continue
+        if href == article_canonical:
+            continue
+        internal_links.append(href)
+    unique = _dedupe_ordered(internal_links)
+    return len(unique), unique
+
+
+def _minimum_internal_links(recommendations: dict[str, Any]) -> int:
+    if not isinstance(recommendations, dict):
+        recommendations = {}
+    link_plan = (
+        recommendations.get("internal_link_plan")
+        or (recommendations.get("blueprint") or {}).get("internal_link_plan")
+        or {}
+    )
+    if not isinstance(link_plan, dict):
+        return 3
+    try:
+        return int(link_plan.get("minimum_internal_links", 3))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _refresh_quality_status(manifest: dict[str, Any]) -> None:
+    quality_gate = manifest.setdefault("quality_gate", {})
+    if not isinstance(quality_gate, dict):
+        return
+    missing = manifest.get("missing_required_modules")
+    if not isinstance(missing, list):
+        missing = []
+    blocking = quality_gate.get("blocking_issues")
+    if not isinstance(blocking, list):
+        blocking = []
+    quality_gate["missing_required_modules"] = missing
+    quality_gate["blocking_issues"] = blocking
+    quality_gate["status"] = "passed" if not missing and not blocking else "failed"
+
+
+def _apply_internal_link_domain_fix(run_dir: Path, article_slug: str, manifest: dict[str, Any]) -> None:
+    state = _load_state(run_dir / "state.json")
+    site_key = str(state.get("site_key") or "")
+    output_paths = _output_paths(run_dir)
+    article = _read_json(output_paths["articles_dir"] / f"{article_slug}.json")
+    if not isinstance(article, dict):
+        return
+    article_url = str(article.get("url") or "")
+    if not site_key:
+        site_key = _slugify_site_key(urlparse(article_url).hostname or "")
+    if not article_url or not site_key:
+        return
+    html_path = output_paths["optimised_dir"] / f"{article_slug}.html"
+    if not html_path.exists():
+        return
+    html_text = html_path.read_text(encoding="utf-8")
+    internal_link_count, internal_links = _count_internal_links_for_site(html_text, article_url, site_key)
+    if internal_link_count <= int(manifest.get("internal_link_count") or 0):
+        return
+
+    manifest["internal_link_count"] = internal_link_count
+    manifest["internal_links"] = internal_links
+
+    minimum_internal_links = _minimum_internal_links(
+        _read_json(output_paths["recommendations_dir"] / f"{article_slug}.json") or {}
+    )
+    if internal_link_count < minimum_internal_links:
+        return
+
+    quality_gate = manifest.get("quality_gate") or {}
+    blocking = quality_gate.get("blocking_issues")
+    if isinstance(blocking, list):
+        expected_prefix = "Rendered article has "
+        expected_suffix = f" internal links; requires {minimum_internal_links}."
+        quality_gate["blocking_issues"] = [
+            issue for issue in blocking
+            if not (isinstance(issue, str) and issue.startswith(expected_prefix) and issue.endswith(expected_suffix))
+        ]
+    _refresh_quality_status(manifest)
+
+
 def _tool_record_voice_baseline(args: dict) -> dict:
     run_id = args["run_id"]
     markdown = str(args["markdown"])
@@ -2688,6 +2837,7 @@ def _tool_validate_article(args: dict) -> dict:
         raise ValueError(f"Run {run_id} does not exist")
     with STATE_LOCK:
         manifest = build_article_manifest(run_dir, article_slug, audit_after=args.get("audit_after"))
+        _apply_internal_link_domain_fix(run_dir, article_slug, manifest)
         _persist_manifest_and_update_draft_state(run_dir, article_slug, manifest)
     return manifest
 
