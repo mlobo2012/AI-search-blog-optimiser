@@ -2,6 +2,116 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.6.0] — 2026-04-25
+
+Peec MCP recommendation engine overhaul. v0.5.9 closed the bug-fix loop with
+both articles passing quality_gate, but a hard review of the v0.5.9 outputs
+against real Peec data showed the recommender contract was too loose: same
+agent produced rich `geo_gap_actions` for one article and a generic 4-item
+list for another in the same run. v0.6.0 hardens the recommender's contract
+end-to-end so the Peec data demonstrably translates into ranking-improving
+recommendations every run.
+
+GEO rubric hygiene is preserved via a new deterministic linter stage — not
+removed.
+
+Two parallel Codex agents (gpt-5.5, reasoning-effort high) implemented the
+work across two lanes with zero file overlap.
+
+### Lane C — Peec gap-reader hardening (input layer)
+- **Improvement 1 (coverage fallback)** — when `matched_prompts == 0`, the
+  gap-reader now pulls `peec_actions(scope=overview)`, source-domain gap
+  report, and engine-level brand sentiment, writing them under
+  `topic_level_signals.{category_gap, surface_gap, dominant_competitor_domains,
+  engine_sentiment}`. Engineering posts no longer fall back to GEO-rubric-only
+  output.
+- **Improvement 2 (signal richness)** — `position_per_engine`,
+  `sentiment_per_engine`, `citation_score_per_engine` are now always emitted
+  (null-keyed when unavailable, never absent). Every `cited_competitor` is
+  tagged with a classification ∈
+  `{COMPETITOR | EDITORIAL | CORPORATE | UGC | REFERENCE}`. `top_gap_chats[]`
+  is required non-empty for every prompt where `engines_lost.length >= 2` —
+  fixes the inconsistency where one article's gap data had chat excerpts and
+  another's did not in the same run.
+
+### Lane D — Recommender output overhaul (output layer)
+- **Improvement 3 (sentiment-driven recs)** — when any engine's sentiment is
+  below the 65 floor, the recommender MUST emit a `category: "sentiment"` rec
+  with the engine, the gap-to-floor, and a verbatim `top_gap_chats` excerpt as
+  evidence. The "ChatGPT sentiment 64 — invisible in the output" failure is
+  now a contract violation.
+- **Improvement 4 (claim-level synthesis)** — when ≥3 prompts share a clear
+  underlying claim, the recommender groups them into one
+  `category: "claim_synthesis"` rec with the synthesised positioning sentence,
+  the addressed prompts, and section target. Replaces 5 atomic same-cluster
+  recs.
+- **Improvement 5 (rubric demotion)** — new module `dashboard/rubric_lint.py`
+  with 13 enumerated deterministic checks (meta description, OG/Twitter tags,
+  JSON-LD, FAQ schema, BreadcrumbList, Person, Organization, CTA, byline,
+  updated_at, internal links). New MCP tool `rubric_lint(run_id, slug)` runs
+  pre-recommender and writes `rubric/{slug}.json`. The recommender consumes
+  this artefact and is explicitly forbidden from regenerating rubric items —
+  its tokens go to synthesis only.
+- **Improvement 6 (category/brand/competition framing)** — required output
+  fields `category_lens`, `brand_lens`, `competition_lens` synthesise where
+  the article sits in the topic cluster, the brand-level engine pattern, and
+  the competition-class strategy implication. Each lens has structured
+  aggregations plus a 2–3 sentence summary.
+- **Improvement 7 (engine-specific tactics)** — when
+  `max(visibility_per_engine) - min(visibility_per_engine) >= 0.40` for any
+  prompt, recommender MUST emit a rec with distinct `per_engine_lift`
+  narratives per engine. Engine-tactic templates encoded:
+  ChatGPT-dark→editorial-listicles+FAQ; Perplexity-dark→inline-evidence+author-trust;
+  Google-AIO-strong→maintain-schema+word-count.
+- **Improvement 8 (off-page action lane)** — new `category: "off_page"` rec
+  type and top-level `off_page_actions[]` array. Triggered when
+  `peec_actions.overview_top_opportunities` shows
+  `gap_percentage >= 50 AND relative_score >= 2`. Off-page recs are not
+  counted against the on-page rec budget.
+- **Improvement 9 (source-classification → strategy mapping)** — when ≥4
+  prompts dominated by `EDITORIAL` competitors, recommender emits a
+  `category: "source_displacement"` rec with `competitors_displaced[]` and an
+  off-page outreach play. Maps to the dominant classification: EDITORIAL →
+  outreach + owned listicle; COMPETITOR → comparison/positioning; CORPORATE/
+  REFERENCE → entity/schema; UGC → distribution.
+- **Improvement 10 (manifest cross-validation)** — the optimised manifest now
+  carries a required `rec_implementation_map` keyed by rec ID, with `section`,
+  `anchor`, `schema_fields[]` or `evidence_inserted[]`, and notes for
+  implemented recs. The validator (`dashboard/quality_gate.py`) FAILS the
+  article if any `priority: critical` LLM-source rec is missing or
+  unimplemented without a valid `reason`. Brilliant recs that the generator
+  silently ignored are now caught at validation time.
+
+### Schema enforcement
+- `record_recommendations` no longer just validates "exactly 4 items." Replaced
+  with full v0.6.0 contract: required top-level fields (category_lens,
+  brand_lens, competition_lens, engine_gap_strategy, primary_gaps, mode,
+  audit, summary, recommendations); LLM-source rec count in [3, 8] for Peec
+  modes, [2, 6] for voice-rubric; per-rec required fields (id, source,
+  category, severity, priority, signal_types[≥1], evidence[≥1]); LLM-source
+  recs additionally need target_engines[≥1] + per_engine_lift; ≥3 distinct
+  signal_types across the LLM set in Peec modes; sentiment / engine-asymmetry
+  / off-page / source-displacement / claim-synthesis triggers all enforced at
+  the seam. Validation failure surfaces a banner via `show_banner` and
+  rejects the write; the recommender retries up to 2 times.
+
+### Acceptance tests
+- tests/improvement_01_coverage_fallback_test.md (Lane C)
+- tests/improvement_02_signal_richness_test.md (Lane C)
+- tests/improvement_03_sentiment_recs_test.md (Lane D)
+- tests/improvement_04_claim_synthesis_test.md (Lane D)
+- tests/improvement_05_rubric_lint_test.md (Lane D)
+- tests/improvement_06_framing_block_test.md (Lane D)
+- tests/improvement_07_engine_specific_test.md (Lane D)
+- tests/improvement_08_off_page_lane_test.md (Lane D)
+- tests/improvement_09_source_displacement_test.md (Lane D)
+- tests/improvement_10_manifest_cross_val_test.md (Lane D)
+
+### Origin
+v0.5.9 smoke run `2026-04-25T17-49-21` (granola-chat-just-got-smarter +
+series-c) plus the earlier 3-article run `2026-04-25T10-45-39`. Spec at
+`specs/2026-04-25-peec-improvements-v2.md`.
+
 ## [0.5.9] — 2026-04-25
 
 Iteration 3 bug-fix release. v0.5.8 smoke landed both articles' audit_after >= 32
