@@ -45,9 +45,21 @@ will use as evidence.
    - If the domain's registrable root or TLD does not match a tracked competitor brand, default to
      `EDITORIAL`.
    - Preserve Peec-provided `CORPORATE`, `UGC`, or `REFERENCE` classifications when present.
-8. Include the matched topic names when present, but do not fail if the project has prompts and no
+8. For chat evidence, sort matched prompts by severity and prioritise prompts where
+   `engines_lost.length >= 2`, then lowest visibility, then highest competitor citation signal.
+   - For at least the top 2 prompts where `engines_lost.length >= 2`, call
+     `list_chats(prompt_id)` and then `get_chat(chat_id)` for selected chats.
+   - Select chats from lost engines where competitor domains appear and the own brand does not.
+   - Record `top_gap_chats[]` with at least one entry for each of those top 2 high-loss prompts.
+   - Each excerpt must be verbatim from `get_chat`, 200 characters or shorter, and show the cited
+     competitor context. Do not paraphrase excerpts.
+   - Include `chat_id`, `engine`, `excerpt`, and `cited_urls` on each chat entry.
+   - If Peec returns no usable chats for a required high-loss prompt after checking available
+     recent chats, do not silently write an empty `top_gap_chats`; set `admissible = false`, show a
+     banner, and include a blocker note naming the prompt.
+9. Include the matched topic names when present, but do not fail if the project has prompts and no
    topics.
-9. Normalize every matched prompt to the locked gap schema before writing:
+10. Normalize every matched prompt to the locked gap schema before writing:
    - `brand.visibility_per_engine`, `brand.sov_per_engine`, `brand.position_per_engine`,
      `brand.sentiment_per_engine`, and `brand.citation_score_per_engine` are always present.
    - For every engine returned by Peec for the prompt, include all five per-engine keys. Use `null`
@@ -56,7 +68,7 @@ will use as evidence.
      when Peec returned no engine rows at all and add a cold-start note.
    - Use `citation_score_per_engine`, not `cite_score_per_engine` or `citation_rate_per_engine`, for
      the brand score container.
-10. Write the Peec record via `record_peec_gap`.
+11. Write the Peec record via `record_peec_gap`.
    - Set `admissible = false` and include `blocker_reason` when prompt matching is missing, stale, or too weak to support a truthful rewrite.
 
 ## Output
