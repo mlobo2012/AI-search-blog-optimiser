@@ -2,6 +2,54 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.6.2] — 2026-04-25
+
+Iteration 5 bug fixes from the v0.6.1 smoke run `2026-04-25T20-12-28`.
+Iteration 4 verified Bugs 11 and 12 fixed at runtime; Bug 13 was partially
+fixed but covered only the explicit-reviewer-id path. Two new bugs
+surfaced. Two parallel Codex agents (gpt-5.5, reasoning-effort high) on
+two non-overlapping files.
+
+### Lane G — validator (dashboard/quality_gate.py)
+- **Bug 14** — `trust_block` resolution now prefers
+  `author_validation.display_name` whenever `author_validation.status ==
+  "passed"`, regardless of whether `reviewer_id` is set explicitly. This
+  subsumes Lane F's iteration-4 fix and covers the promoted-reviewer /
+  weak-source-author path that Lane F missed (granola-chat case where
+  source author was "Jack" first-name-only and reviewer "Chris Pedregal"
+  was promoted at recommend time without setting reviewer_id on the
+  manifest). The two paths can no longer disagree on whether an author
+  exists: `(trust_block.author_name == "") ⟺ (author_validation.status !=
+  "passed")`.
+- **Bug 16** — `question_headings` module now passes when at least 50% of
+  H2s are in question format (or ≥2 question H2s when H2 count ≥ 3),
+  matching the GEO contract intent. Previously the detector required every
+  H2 to be a question, which caused valid articles with mixed
+  question/declarative H2s to fail the module check despite hitting the
+  contract spirit. Question detection recognises both literal `?` suffix
+  AND H2s that start with question-words (Which/How/What/Why/When/Where/
+  Who/Can/Does/Is/Are/Should), case-insensitive.
+
+### Lane H — generator (agents/generator.md)
+- **Bug 15** — generator instructions now pin the EXACT
+  `rec_implementation_map` JSON shape with explicit field names. The
+  v0.6.0/v0.6.1 generator drifted to writing
+  `{"status": "implemented", "note": "..."}` which the validator's
+  rec-implementation checker (Lane D, commit a4a7d24) rejects because it
+  expects `{"implemented": true, "section": "...", "anchor": "...",
+  "schema_fields": [...], "evidence_inserted": [...], "notes": "..."}`. The
+  generator now follows the locked shape with explicit warnings against
+  the legacy `status` and `note` field names.
+
+### Acceptance tests
+- tests/bug_14_trust_block_promoted_reviewer_test.md (Lane G)
+- tests/bug_15_rec_implementation_format_test.md (Lane H)
+- tests/bug_16_question_headings_detection_test.md (Lane G)
+
+### Origin
+v0.6.1 smoke run `2026-04-25T20-12-28`. Spec at
+`specs/2026-04-25-bugs-iteration5.md`.
+
 ## [0.6.1] — 2026-04-25
 
 Iteration 4 bug fixes from the v0.6.0 smoke run `2026-04-25T19-21-10`. The
