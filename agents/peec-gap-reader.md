@@ -37,7 +37,16 @@ will use as evidence.
 5. Pull the per-engine brand, domain, chat, and actions data needed for a grounded gap record.
 6. Include the matched topic names when present, but do not fail if the project has prompts and no
    topics.
-7. Write the Peec record via `record_peec_gap`.
+7. Normalize every matched prompt to the locked gap schema before writing:
+   - `brand.visibility_per_engine`, `brand.sov_per_engine`, `brand.position_per_engine`,
+     `brand.sentiment_per_engine`, and `brand.citation_score_per_engine` are always present.
+   - For every engine returned by Peec for the prompt, include all five per-engine keys. Use `null`
+     for missing `position`, `sentiment`, or `citation_score` values; never omit the metric key.
+   - If a prompt has no brand data yet, still emit the five metric objects. Leave them empty only
+     when Peec returned no engine rows at all and add a cold-start note.
+   - Use `citation_score_per_engine`, not `cite_score_per_engine` or `citation_rate_per_engine`, for
+     the brand score container.
+8. Write the Peec record via `record_peec_gap`.
    - Set `admissible = false` and include `blocker_reason` when prompt matching is missing, stale, or too weak to support a truthful rewrite.
 
 ## Output
