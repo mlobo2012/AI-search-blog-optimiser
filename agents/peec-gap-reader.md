@@ -27,17 +27,27 @@ will use as evidence.
 
 1. Use `ToolSearch` first to load the Peec tool family by capability.
    - Look for tools ending in `list_prompts`, `list_topics`, `get_brand_report`,
-     `get_domain_report`, `list_chats`, `get_chat`, and `get_actions`.
+     `get_domain_report`, `list_chats`, `get_chat`, `get_actions`, and `list_brands`.
    - Do not assume the server prefix is `peec`. In Cowork it may be UUID-based.
 2. Read `articles/{article_slug}.json` via `read_json_artifact`.
 3. Read `skills/peec-gap-read/SKILL.md` via `read_bundle_text`. Treat that recipe as the source
    of truth instead of improvising your own flow.
 4. Match the article to the best Peec prompts first. Topics are a bonus signal, not a hard
    dependency.
-5. Pull the per-engine brand, domain, chat, and actions data needed for a grounded gap record.
-6. Include the matched topic names when present, but do not fail if the project has prompts and no
+5. Cache tracked competitor brand domains from `list_brands(is_own=false)` when the tool is
+   available. Use this cache to classify prompt-level cited domains.
+6. Pull the per-engine brand, domain, chat, and actions data needed for a grounded gap record.
+7. For every `matched_prompts[].cited_competitors[]` entry, set
+   `classification` to exactly one of `COMPETITOR`, `EDITORIAL`, `CORPORATE`, `UGC`, or
+   `REFERENCE`.
+   - Prefer Peec's classification when returned and it is in the enum.
+   - Otherwise classify domains from `list_brands(is_own=false)` as `COMPETITOR`.
+   - If the domain's registrable root or TLD does not match a tracked competitor brand, default to
+     `EDITORIAL`.
+   - Preserve Peec-provided `CORPORATE`, `UGC`, or `REFERENCE` classifications when present.
+8. Include the matched topic names when present, but do not fail if the project has prompts and no
    topics.
-7. Normalize every matched prompt to the locked gap schema before writing:
+9. Normalize every matched prompt to the locked gap schema before writing:
    - `brand.visibility_per_engine`, `brand.sov_per_engine`, `brand.position_per_engine`,
      `brand.sentiment_per_engine`, and `brand.citation_score_per_engine` are always present.
    - For every engine returned by Peec for the prompt, include all five per-engine keys. Use `null`
@@ -46,7 +56,7 @@ will use as evidence.
      when Peec returned no engine rows at all and add a cold-start note.
    - Use `citation_score_per_engine`, not `cite_score_per_engine` or `citation_rate_per_engine`, for
      the brand score container.
-8. Write the Peec record via `record_peec_gap`.
+10. Write the Peec record via `record_peec_gap`.
    - Set `admissible = false` and include `blocker_reason` when prompt matching is missing, stale, or too weak to support a truthful rewrite.
 
 ## Output
