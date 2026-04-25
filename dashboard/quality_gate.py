@@ -25,6 +25,24 @@ WEAK_BYLINE_TOKENS = {
     "staff",
     "team",
 }
+WEAK_ROLE_TOKENS = {"and", "author", "blog", "none", "null", "staff", "team", "the", "unknown"}
+SINGLE_NAME_ROLE_KEYWORDS = {
+    "architect",
+    "ceo",
+    "chief",
+    "cofounder",
+    "cto",
+    "developer",
+    "director",
+    "engineer",
+    "engineering",
+    "founder",
+    "head",
+    "lead",
+    "manager",
+    "product",
+    "software",
+}
 SECURITY_ROLE_KEYWORDS = {"compliance", "governance", "legal", "privacy", "risk", "security", "trust"}
 REVIEWER_ROLE_KEYWORDS = {"ceo", "chief", "cofounder", "founder", "head", "lead", "product"}
 INTENT_REQUIREMENTS = {
@@ -82,6 +100,15 @@ def _require_mapping(value: Any, label: str, path: Path) -> dict[str, Any]:
 
 def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _looks_like_faq_question(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if normalized.endswith("?"):
+        return True
+    return bool(re.match(r"^(how|what|when|where|which|who|why|can|could|should|do|does|is|are|will)\b", normalized, re.IGNORECASE))
 
 
 def _canonicalize_url(url: str, base_url: str | None = None) -> str:
@@ -162,6 +189,29 @@ def _is_weak_byline(name: str) -> bool:
         return True
     lowered = {token.lower() for token in tokens}
     return bool(lowered & WEAK_BYLINE_TOKENS)
+
+
+def _has_first_and_last_name(name: str) -> bool:
+    return not _is_weak_byline(name)
+
+
+def _is_real_single_name_role(role: str) -> bool:
+    normalized = _normalize_text(role).lower()
+    if len(normalized) < 4 or normalized in WEAK_ROLE_TOKENS:
+        return False
+    role_tokens = {token.lower() for token in _slug_tokens(role)}
+    if role_tokens & WEAK_ROLE_TOKENS:
+        return False
+    return bool(role_tokens & SINGLE_NAME_ROLE_KEYWORDS)
+
+
+def _is_single_name_with_role(name: str, role: str) -> bool:
+    name_tokens = _slug_tokens(name)
+    if len(name_tokens) != 1:
+        return False
+    if name_tokens[0].lower() in WEAK_BYLINE_TOKENS:
+        return False
+    return _is_real_single_name_role(role)
 
 
 def _dedupe_preserve(values: list[str]) -> list[str]:
@@ -292,6 +342,7 @@ def _role_is_reviewer_relevant(role: str) -> bool:
 class HTMLSnapshot:
     visible_text: str
     headings: list[dict[str, Any]]
+    dt_questions: list[dict[str, Any]]
     links: list[dict[str, str]]
     paragraphs: list[str]
     table_count: int
@@ -303,15 +354,15 @@ class HTMLSnapshot:
     @property
     def faq_questions(self) -> list[str]:
         faq_index = next((index for index, item in enumerate(self.headings) if "faq" in item["text"].lower()), -1)
-        if faq_index == -1:
-            return []
-        questions: list[str] = []
-        for item in self.headings[faq_index + 1:]:
-            if item["level"] <= self.headings[faq_index]["level"]:
-                break
-            if item["text"].endswith("?"):
-                questions.append(item["text"])
-        return questions
+        candidates = list(self.dt_questions)
+        if faq_index != -1:
+            for item in self.headings[faq_index + 1:]:
+                if item["level"] <= self.headings[faq_index]["level"]:
+                    break
+                if _looks_like_faq_question(item["text"]):
+                    candidates.append(item)
+        ordered = sorted(candidates, key=lambda item: int(item.get("order", 0)))
+        return _dedupe_preserve([item["text"] for item in ordered])
 
 
 class _HTMLSnapshotParser(HTMLParser):
@@ -322,11 +373,16 @@ class _HTMLSnapshotParser(HTMLParser):
         self.links: list[dict[str, str]] = []
         self.paragraphs: list[str] = []
         self.jsonld_chunks: list[str] = []
+        self.dt_questions: list[dict[str, Any]] = []
         self.table_count = 0
         self.ordered_lists = 0
         self.unordered_lists = 0
+        self._node_order = 0
         self._heading_tag: str | None = None
         self._heading_text: list[str] = []
+        self._dl_depth = 0
+        self._dt_open = False
+        self._dt_text: list[str] = []
         self._paragraph_open = False
         self._paragraph_text: list[str] = []
         self._link_href = ""
@@ -337,10 +393,16 @@ class _HTMLSnapshotParser(HTMLParser):
         self._in_title = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
         attrs_dict = dict(attrs)
         if tag in {"h1", "h2", "h3"}:
             self._heading_tag = tag
             self._heading_text = []
+        elif tag == "dl":
+            self._dl_depth += 1
+        elif tag == "dt" and self._dl_depth > 0:
+            self._dt_open = True
+            self._dt_text = []
         elif tag == "p":
             self._paragraph_open = True
             self._paragraph_text = []
@@ -360,12 +422,23 @@ class _HTMLSnapshotParser(HTMLParser):
             self._in_title = True
 
     def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
         if tag == self._heading_tag and self._heading_tag:
             text = _normalize_text("".join(self._heading_text))
             if text:
-                self.headings.append({"level": int(self._heading_tag[1]), "text": text})
+                self._node_order += 1
+                self.headings.append({"level": int(self._heading_tag[1]), "text": text, "order": self._node_order})
             self._heading_tag = None
             self._heading_text = []
+        elif tag == "dt" and self._dt_open:
+            text = _normalize_text("".join(self._dt_text))
+            if _looks_like_faq_question(text):
+                self._node_order += 1
+                self.dt_questions.append({"text": text, "order": self._node_order})
+            self._dt_open = False
+            self._dt_text = []
+        elif tag == "dl" and self._dl_depth > 0:
+            self._dl_depth -= 1
         elif tag == "p" and self._paragraph_open:
             text = _normalize_text("".join(self._paragraph_text))
             if text:
@@ -395,6 +468,8 @@ class _HTMLSnapshotParser(HTMLParser):
         self.text_chunks.append(data)
         if self._heading_tag:
             self._heading_text.append(data)
+        if self._dt_open:
+            self._dt_text.append(data)
         if self._paragraph_open:
             self._paragraph_text.append(data)
         if self._link_href:
@@ -415,6 +490,7 @@ def _parse_html_snapshot(html_text: str) -> HTMLSnapshot:
     return HTMLSnapshot(
         visible_text=_normalize_text(" ".join(parser.text_chunks)),
         headings=parser.headings,
+        dt_questions=parser.dt_questions,
         links=parser.links,
         paragraphs=parser.paragraphs,
         table_count=parser.table_count,
@@ -545,22 +621,27 @@ def _validate_author(
 ) -> dict[str, Any]:
     review_plan = _reviewer_plan(recommendations)
     review_lookup = {str(item.get("id")): item for item in reviewers if isinstance(item, dict)}
-    source_author = ((article.get("trust") or {}).get("author") or {}).get("name", "")
-    source_role = ((article.get("trust") or {}).get("author") or {}).get("role", "")
+    source_author = str(((article.get("trust") or {}).get("author") or {}).get("name", "")).strip()
+    source_role = str(((article.get("trust") or {}).get("author") or {}).get("role", "")).strip()
     schema_author_name = schema.get("author_name", "")
     schema_author_role = schema.get("author_role", "")
     display_name = str(review_plan.get("display_name") or schema_author_name or source_author or "").strip()
     display_role = str(review_plan.get("display_role") or schema_author_role or source_role or "").strip()
     visible = snapshot.visible_text.lower()
+    reviewer_id = review_plan.get("reviewer_id")
+    uses_article_author = bool(source_author) and display_name.lower() == source_author.lower()
+    author_fallback_available = not reviewers and not reviewer_id and uses_article_author
+    full_name_author_fallback = author_fallback_available and _has_first_and_last_name(source_author)
+    single_name_with_role = author_fallback_available and _is_single_name_with_role(source_author, source_role)
 
     result = {
         "status": "passed",
         "display_name": display_name,
         "display_role": display_role,
-        "reviewer_id": review_plan.get("reviewer_id"),
+        "reviewer_id": reviewer_id,
         "detail": "",
     }
-    if _is_weak_byline(display_name):
+    if _is_weak_byline(display_name) and not single_name_with_role:
         result["status"] = "failed"
         result["detail"] = "Visible byline is anonymous, team-based, or missing a full name."
         return result
@@ -568,11 +649,14 @@ def _validate_author(
         result["status"] = "failed"
         result["detail"] = "Rendered HTML does not expose the selected reviewer or author name visibly."
         return result
-    if not display_role or display_role.lower() not in visible:
+    if display_role and display_role.lower() not in visible:
         result["status"] = "failed"
         result["detail"] = "Rendered trust block is missing a visible reviewer role or credential."
         return result
-    reviewer_id = review_plan.get("reviewer_id")
+    if not display_role and not full_name_author_fallback:
+        result["status"] = "failed"
+        result["detail"] = "Rendered trust block is missing a visible reviewer role or credential."
+        return result
     if reviewer_id:
         reviewer = review_lookup.get(str(reviewer_id))
         if not reviewer or not reviewer.get("active", False):
@@ -594,6 +678,12 @@ def _validate_author(
     elif intent == "security":
         result["status"] = "failed"
         result["detail"] = "Security page needs a public security/compliance/legal reviewer, and none was selected."
+        return result
+    elif single_name_with_role:
+        result["detail"] = f"{display_name} is accepted via single-name-with-role author validation because trust.author.role is {source_role}."
+        return result
+    elif full_name_author_fallback:
+        result["detail"] = f"{display_name} is accepted from the article author fallback because site reviewers.json is empty."
         return result
     elif not _role_is_reviewer_relevant(display_role):
         result["status"] = "failed"
