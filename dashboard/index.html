@@ -37,14 +37,8 @@
           <h1 class="font-heading text-lg tracking-tight">Blog Optimiser</h1>
         </a>
       </div>
-      <div class="flex items-center gap-3 text-sm text-gray-500">
-        <span x-show="state?.site_key" class="font-medium text-gray-700" x-text="state?.site_key"></span>
-        <span x-show="state?.site_key">·</span>
-        <span x-show="state?.session?.mode"
-              class="px-2 py-0.5 rounded-full border text-xs uppercase tracking-wide"
-              :class="state?.session?.mode === 'resumed' ? 'border-orange-200 bg-orange-50 text-orange-700' : 'border-accent/30 bg-accent-light text-accent-dark'"
-              x-text="state?.session?.mode || 'fresh'"></span>
-        <span x-show="state?.run_id" x-text="'run ' + state.run_id"></span>
+      <div class="flex items-center gap-4 text-sm text-gray-500">
+        <span x-show="formattedUpdatedAt()" x-text="'Updated at ' + formattedUpdatedAt()"></span>
         <a href="/" class="underline hover:text-accent-dark">History</a>
       </div>
     </div>
@@ -81,41 +75,6 @@
           </div>
         </div>
       </template>
-
-      <template x-for="[gateName, gate] in Object.entries(gates || {})" :key="gateName">
-        <div x-show="gate?.status === 'pending'" class="border-b-2 border-accent bg-accent-light">
-          <div class="max-w-7xl mx-auto px-6 py-4 flex items-start justify-between gap-4">
-            <div class="flex-1">
-              <p class="font-heading text-accent-dark font-medium mb-1">Review needed</p>
-              <p class="text-sm text-gray-800" x-text="gate?.prompt || ('Review ' + gateName.replace(/_gate$/, '') + ' stage output, then continue.')"></p>
-            </div>
-            <button @click="resolveGate(gateName)"
-                    class="px-4 py-2 rounded bg-accent text-white hover:bg-accent-dark font-medium text-sm whitespace-nowrap">
-              Continue
-            </button>
-          </div>
-        </div>
-      </template>
-
-      <section class="border-b border-gray-200 bg-surface-light">
-        <div class="max-w-7xl mx-auto px-6 py-4">
-          <div class="flex flex-wrap items-center gap-3 text-sm">
-            <span class="px-2.5 py-1 rounded-full bg-white border border-gray-200 text-gray-700">
-              <span class="text-gray-500">Site:</span>
-              <span class="font-medium" x-text="state?.site_key || 'pending'"></span>
-            </span>
-            <span class="px-2.5 py-1 rounded-full bg-white border border-gray-200 text-gray-700" x-show="state?.peec_project?.id">
-              <span class="text-gray-500">Peec:</span>
-              <span class="font-medium" x-text="state?.peec_project?.id"></span>
-            </span>
-            <span class="px-2.5 py-1 rounded-full border text-xs uppercase tracking-wide"
-                  :class="state?.voice?.mode === 'reused' ? 'border-accent/30 bg-accent-light text-accent-dark' : 'border-gray-200 bg-white text-gray-600'">
-              <span x-text="state?.voice?.mode === 'reused' ? 'voice reused' : 'voice fresh'"></span>
-            </span>
-            <span class="text-xs text-gray-500" x-show="state?.updated_at" x-text="'Updated ' + state.updated_at"></span>
-          </div>
-        </div>
-      </section>
 
       <section class="border-b border-gray-200 bg-white">
         <div class="max-w-7xl mx-auto px-6 py-4">
@@ -171,7 +130,7 @@
                   <th class="px-4 py-3 w-44">Recommendations</th>
                   <th class="px-4 py-3 w-36">Draft</th>
                   <th class="px-4 py-3 w-24">Score</th>
-                  <th class="px-4 py-3 w-[28rem]">Actions</th>
+                  <th class="px-4 py-3 w-[20rem]">Actions</th>
                 </tr>
               </thead>
               <template x-if="!(state?.articles || []).length">
@@ -212,351 +171,138 @@
                     </td>
                     <td class="px-4 py-3">
                       <div class="flex flex-wrap gap-2">
-                        <button @click="toggleExpanded(article.slug)"
+                        <button x-show="recommendationsReady(article)"
+                                @click="togglePanel(article.slug, 'recommendations')"
                                 class="px-3 py-1 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                          <span x-show="expanded !== article.slug">Details</span>
-                          <span x-show="expanded === article.slug">Close</span>
+                          <span x-text="panelButtonLabel(article.slug, 'recommendations', 'View recommendations')"></span>
                         </button>
-                        <a :href="articlePreviewUrl(article)" target="_blank" rel="noopener"
-                           class="px-3 py-1 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                          View article
-                        </a>
-                        <a :href="recommendationsUrl(article)" target="_blank" rel="noopener"
-                           class="px-3 py-1 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                          View recommendations
-                        </a>
-                        <a x-show="article.stages?.draft?.status === 'completed'"
-                           :href="optimisedUrl(article, 'md')" target="_blank" rel="noopener"
-                           class="px-3 py-1 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                          View markdown
-                        </a>
-                        <a x-show="article.stages?.draft?.status === 'completed'"
-                           :href="optimisedUrl(article, 'html')" target="_blank" rel="noopener"
-                           class="px-3 py-1 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                          View HTML
-                        </a>
-                        <a x-show="article.stages?.draft?.status === 'completed'"
-                           :href="optimisedUrl(article, 'diff')" target="_blank" rel="noopener"
-                           class="px-3 py-1 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                          View diff
-                        </a>
+                        <button x-show="draftVisible(article)"
+                                @click="togglePanel(article.slug, 'draft')"
+                                class="px-3 py-1 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
+                          <span x-text="panelButtonLabel(article.slug, 'draft', 'View draft article')"></span>
+                        </button>
                       </div>
                     </td>
                   </tr>
 
-                  <tr x-show="expanded === article.slug">
+                  <tr x-show="panelOpen(article.slug)">
                     <td colspan="7" class="bg-surface-light p-0">
-                      <div class="p-6 border-t border-gray-200" x-data="articleDetail(article)" x-init="load()">
-                        <div x-show="loading" class="text-sm text-gray-500">Loading recommendations…</div>
-                        <template x-if="!loading && (articleData || recommendations)">
-                          <div>
-                            <div class="flex items-center justify-between mb-4 gap-4">
+                      <div class="p-6 border-t border-gray-200" x-data="articleDetail(article, expanded.panel)" x-init="load()">
+                        <div x-show="loading" class="text-sm text-gray-500">Loading article artifacts…</div>
+
+                        <template x-if="!loading && panel === 'recommendations'">
+                          <section class="space-y-5">
+                            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                               <div>
-                                <h3 class="font-heading text-lg" x-text="article.title || article.slug"></h3>
-                                <p class="text-xs text-gray-500 mt-1">
-                                  <span x-text="summaryLine()"></span>
-                                </p>
+                                <h3 class="font-heading text-xl" x-text="article.title || article.slug"></h3>
+                                <p class="mt-2 text-sm text-gray-600 leading-relaxed max-w-3xl" x-text="sourceIntro()"></p>
                               </div>
-                              <div class="flex gap-2">
-                                <button x-show="article.stages?.draft?.status === 'completed'"
-                                        @click="openPreview()"
-                                        class="px-3 py-1.5 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark">
-                                  Preview draft
-                                </button>
-                                <button x-show="article.stages?.draft?.status === 'completed'"
-                                        @click="approve()"
-                                        class="px-3 py-1.5 rounded text-xs font-medium bg-accent text-white hover:bg-accent-dark">
-                                  Approve
-                                </button>
-                                <button @click="rerun()"
-                                        class="px-3 py-1.5 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark">
-                                  Re-run
-                                </button>
+                              <div class="flex items-center gap-3 text-sm">
+                                <span class="px-2.5 py-1 rounded-full border border-accent/20 bg-accent-light text-accent-dark font-medium"
+                                      x-text="recommendationStatusLine()"></span>
+                                <a :href="liveArticleUrl()" target="_blank" rel="noopener"
+                                   class="underline text-accent-dark hover:text-accent">
+                                  Open full article
+                                </a>
                               </div>
                             </div>
 
-                            <div class="grid gap-4 xl:grid-cols-[21rem_minmax(0,1fr)] items-start">
-                              <aside class="xl:sticky xl:top-4 self-start">
-                                <div class="bg-white border border-gray-200 rounded-xl overflow-hidden">
-                                  <div class="px-4 py-4 border-b border-gray-100 bg-gradient-to-r from-white via-white to-accent-light/30">
-                                    <div class="flex items-start justify-between gap-3">
-                                      <div>
-                                        <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Recommendations</p>
-                                        <p class="font-medium text-gray-900 mt-1">
-                                          <span x-text="recommendationList().length || 0"></span>
-                                          <span class="text-gray-500">items in this pass</span>
-                                        </p>
-                                      </div>
-                                      <div class="text-right text-xs text-gray-500">
-                                        <p><span class="font-medium text-gray-900" x-text="criticalCount()"></span> critical</p>
-                                        <p x-text="decisionSummary()"></p>
-                                      </div>
-                                    </div>
+                            <div class="grid gap-4 md:grid-cols-3">
+                              <div class="rounded-xl border border-gray-200 bg-white p-4">
+                                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Article type</p>
+                                <p class="mt-2 text-sm font-medium text-gray-900" x-text="articleTypeLabel()"></p>
+                              </div>
+                              <div class="rounded-xl border border-gray-200 bg-white p-4">
+                                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Audit</p>
+                                <p class="mt-2 text-sm font-medium text-gray-900" x-text="recommendationAuditLine()"></p>
+                              </div>
+                              <div class="rounded-xl border border-gray-200 bg-white p-4">
+                                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Evidence mode</p>
+                                <p class="mt-2 text-sm font-medium text-gray-900 capitalize" x-text="recommendations?.mode || 'voice-rubric'"></p>
+                              </div>
+                            </div>
+
+                            <div class="space-y-4">
+                              <template x-if="!recommendationList().length">
+                                <div class="rounded-xl border border-dashed border-gray-200 bg-white px-4 py-6 text-sm text-gray-500">
+                                  No recommendations were saved for this article yet.
+                                </div>
+                              </template>
+
+                              <template x-for="rec in recommendationList()" :key="recId(rec)">
+                                <div class="rounded-xl border border-gray-200 bg-white p-5">
+                                  <div class="flex flex-wrap items-center gap-2 mb-3">
+                                    <span class="px-2 py-0.5 rounded-full text-xs font-medium"
+                                          :class="rec.required ? 'bg-accent text-white' : 'bg-gray-100 text-gray-700'"
+                                          x-text="rec.required ? 'Required' : 'Recommended'"></span>
+                                    <span class="px-2 py-0.5 rounded-full text-xs capitalize"
+                                          :class="severityTone(rec.severity)"
+                                          x-text="rec.severity || 'medium'"></span>
+                                    <span x-show="moduleList(rec).length"
+                                          class="text-xs text-gray-500"
+                                          x-text="moduleList(rec).join(' · ')"></span>
                                   </div>
-                                  <div class="max-h-[42rem] overflow-auto p-3 space-y-3">
-                                    <template x-if="!recommendationList().length">
-                                      <div class="rounded-xl border border-dashed border-gray-200 bg-surface-light px-4 py-5 text-sm text-gray-500">
-                                        No recommendations saved for this article yet. The inspector still shows the captured article and current structure.
-                                      </div>
-                                    </template>
-                                    <template x-for="rec in recommendationList()" :key="recId(rec)">
-                                      <div @click="selectRecommendation(recId(rec))"
-                                           class="w-full text-left rounded-xl border p-4 transition cursor-pointer"
-                                           :class="activeRecId === recId(rec) ? 'border-accent bg-accent-light/50 shadow-sm' : decisionTone(recId(rec), false)">
-                                        <div class="flex items-start justify-between gap-3">
-                                          <div class="min-w-0 flex-1">
-                                            <div class="flex items-center gap-2 mb-2 text-xs">
-                                              <span class="font-mono text-gray-400" x-text="recId(rec)"></span>
-                                              <span class="px-2 py-0.5 rounded-full capitalize"
-                                                    :class="severityTone(rec.severity)"
-                                                    x-text="rec.severity"></span>
-                                              <span class="text-gray-500 capitalize" x-text="rec.effort || 'unknown effort'"></span>
-                                            </div>
-                                            <p class="font-medium text-gray-900 leading-snug" x-text="rec.title || rec.heading || 'Recommendation'"></p>
-                                            <p class="mt-2 text-xs text-gray-600 max-h-20 overflow-hidden" x-text="recBody(rec)"></p>
-                                          </div>
-                                          <div class="flex flex-col gap-1 shrink-0">
-                                            <button @click.stop="setDecision(recId(rec), 'accept')"
-                                                    class="w-8 h-8 rounded-lg border text-sm"
-                                                    :class="decisions?.recs?.[recId(rec)] === 'accept' ? 'border-accent bg-accent text-white' : 'border-gray-200 hover:border-accent'">✓</button>
-                                            <button @click.stop="setDecision(recId(rec), 'reject')"
-                                                    class="w-8 h-8 rounded-lg border text-sm"
-                                                    :class="decisions?.recs?.[recId(rec)] === 'reject' ? 'border-gray-400 bg-gray-100' : 'border-gray-200 hover:border-gray-400'">✕</button>
-                                          </div>
-                                        </div>
-                                        <div class="mt-3 flex flex-wrap gap-2 text-[11px]">
-                                          <span class="px-2 py-1 rounded-full bg-white border border-gray-200 text-gray-500 capitalize"
-                                                x-text="prettyLabel(rec.category || 'general')"></span>
-                                          <span x-show="rec.auto_fix?.type"
-                                                class="px-2 py-1 rounded-full bg-white border border-gray-200 text-gray-500"
-                                                x-text="prettyLabel(rec.auto_fix?.type)"></span>
-                                          <span class="px-2 py-1 rounded-full"
-                                                :class="decisionPillTone(recId(rec))"
-                                                x-text="decisionLabel(recId(rec))"></span>
-                                        </div>
+                                  <h4 class="font-medium text-gray-900" x-text="rec.title || 'Recommendation'"></h4>
+                                  <p class="mt-2 text-sm text-gray-700" x-text="recommendationWhy(rec)"></p>
+                                  <div class="mt-4 rounded-lg bg-surface-light px-4 py-3 text-sm text-gray-700">
+                                    <span class="font-medium text-gray-900">Implementation:</span>
+                                    <span x-text="' ' + recommendationImplementation(rec)"></span>
+                                  </div>
+                                  <div class="mt-4 space-y-2">
+                                    <template x-for="item in evidenceItems(rec)" :key="item.label + item.text">
+                                      <div class="rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-700 bg-white">
+                                        <span class="font-medium text-accent-dark" x-text="item.label + ':'"></span>
+                                        <span x-text="' ' + item.text"></span>
+                                        <a x-show="item.url" :href="item.url" target="_blank" rel="noopener" class="underline ml-1">Open</a>
                                       </div>
                                     </template>
                                   </div>
                                 </div>
-                              </aside>
-
-                              <section class="space-y-4">
-                                <div class="bg-white border border-gray-200 rounded-xl overflow-hidden">
-                                  <div class="px-4 py-4 border-b border-gray-100 bg-white">
-                                    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                                      <div class="min-w-0">
-                                        <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Inspector</p>
-                                        <h4 class="mt-1 font-heading text-xl text-gray-950">Optimized article</h4>
-                                        <p class="mt-2 text-sm text-gray-600 leading-relaxed" x-text="selectedRecommendationTitle()"></p>
-                                      </div>
-                                      <div class="flex flex-wrap items-center gap-2 text-xs">
-                                        <span class="px-2.5 py-1 rounded-full border border-accent/20 bg-accent-light text-accent-dark font-medium"
-                                              x-text="auditDeltaLabel()"></span>
-                                        <span class="px-2.5 py-1 rounded-full border border-gray-200 bg-white text-gray-500"
-                                              x-text="draftReady() ? 'Draft ready' : 'Draft pending'"></span>
-                                        <a :href="recommendationsUrl()" target="_blank" rel="noopener"
-                                           class="px-3 py-1.5 rounded-full border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                                          Recommendation JSON
-                                        </a>
-                                        <a x-show="draftReady()" :href="optimisedUrl('diff')" target="_blank" rel="noopener"
-                                           class="px-3 py-1.5 rounded-full border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                                          Diff
-                                        </a>
-                                      </div>
-                                    </div>
-                                    <div class="mt-4 flex flex-wrap gap-2">
-                                      <button type="button"
-                                              @click="inspectorTab = 'article'"
-                                              class="px-3 py-1.5 rounded-full border text-xs font-medium transition"
-                                              :class="inspectorTab === 'article' ? 'border-accent bg-accent-light text-accent-dark' : 'border-gray-200 text-gray-500 hover:border-accent hover:text-accent-dark'">
-                                        Optimized article
-                                      </button>
-                                      <button type="button"
-                                              @click="inspectorTab = 'structure'"
-                                              class="px-3 py-1.5 rounded-full border text-xs font-medium transition"
-                                              :class="inspectorTab === 'structure' ? 'border-accent bg-accent-light text-accent-dark' : 'border-gray-200 text-gray-500 hover:border-accent hover:text-accent-dark'">
-                                        Structure
-                                      </button>
-                                      <button type="button"
-                                              @click="inspectorTab = 'image'"
-                                              class="px-3 py-1.5 rounded-full border text-xs font-medium transition"
-                                              :class="inspectorTab === 'image' ? 'border-accent bg-accent-light text-accent-dark' : 'border-gray-200 text-gray-500 hover:border-accent hover:text-accent-dark'">
-                                        Image
-                                      </button>
-                                    </div>
-                                  </div>
-
-                                  <div x-show="inspectorTab === 'article'" class="p-4 lg:p-5 space-y-4">
-                                    <div class="rounded-xl border border-accent/20 bg-accent-light/40 px-4 py-4">
-                                      <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                                        <div class="min-w-0">
-                                          <div class="flex flex-wrap items-center gap-2 text-xs mb-2">
-                                            <span class="font-mono text-accent-dark" x-text="selectedRecommendationId()"></span>
-                                            <span class="px-2 py-0.5 rounded-full capitalize"
-                                                  :class="severityTone(selectedRecommendation()?.severity)"
-                                                  x-text="selectedRecommendation()?.severity || 'pending'"></span>
-                                            <span class="px-2 py-0.5 rounded-full bg-white/90 border border-accent/20 text-accent-dark capitalize"
-                                                  x-text="selectedRecommendation()?.effort || 'unknown effort'"></span>
-                                          </div>
-                                          <p class="font-medium text-gray-900 leading-snug" x-text="selectedRecommendationTitle()"></p>
-                                          <p class="mt-2 text-sm text-gray-700 whitespace-pre-wrap" x-text="selectedRecommendationBody()"></p>
-                                        </div>
-                                        <div class="grid gap-2 sm:grid-cols-3 xl:w-[18rem] shrink-0">
-                                          <template x-for="item in selectedLiftItems()" :key="item.engine">
-                                            <div class="rounded-lg border border-white/70 bg-white/90 px-3 py-2">
-                                              <p class="text-[11px] uppercase tracking-wide text-gray-400" x-text="item.engine"></p>
-                                              <p class="mt-1 text-xs text-gray-700 capitalize" x-text="item.lift"></p>
-                                            </div>
-                                          </template>
-                                        </div>
-                                      </div>
-                                    </div>
-
-                                    <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_17rem] items-start">
-                                      <div class="rounded-xl border border-gray-200 overflow-hidden bg-surface-light">
-                                        <template x-if="draftReady()">
-                                          <iframe :src="optimisedUrl('html')" class="w-full h-[42rem] bg-white" title="Optimized article preview"></iframe>
-                                        </template>
-                                        <template x-if="!draftReady()">
-                                          <iframe :src="articlePreviewUrl()" class="w-full h-[42rem] bg-white" title="Captured article preview"></iframe>
-                                        </template>
-                                      </div>
-
-                                      <div class="space-y-4">
-                                        <div class="rounded-xl border border-gray-200 bg-white p-4">
-                                          <p class="text-xs uppercase tracking-[0.18em] text-gray-400">What shipped</p>
-                                          <p class="mt-2 text-sm text-gray-700" x-text="articleInspectorSummary()"></p>
-                                          <div class="mt-3 flex flex-wrap gap-2">
-                                            <a x-show="draftReady()" :href="optimisedUrl('md')" target="_blank" rel="noopener"
-                                               class="px-3 py-1 rounded-full text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                                              Draft markdown
-                                            </a>
-                                            <a :href="articlePreviewUrl()" target="_blank" rel="noopener"
-                                               class="px-3 py-1 rounded-full text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                                              Original article
-                                            </a>
-                                            <a x-show="draftReady()" :href="optimisedUrl('html')" target="_blank" rel="noopener"
-                                               class="px-3 py-1 rounded-full text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
-                                              Draft HTML
-                                            </a>
-                                          </div>
-                                        </div>
-
-                                        <div class="rounded-xl border border-gray-200 bg-white p-4">
-                                          <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Evidence trail</p>
-                                          <div class="mt-3 space-y-2">
-                                            <template x-for="item in evidenceItems(selectedRecommendation())" :key="item.label + item.text">
-                                              <div class="rounded-lg bg-surface-light px-3 py-2 text-xs text-gray-700">
-                                                <span class="font-medium text-accent-dark" x-text="item.label + ':'"></span>
-                                                <span class="whitespace-pre-wrap" x-text="' ' + item.text"></span>
-                                                <a x-show="item.url" :href="item.url" target="_blank" rel="noopener" class="underline ml-1">Open</a>
-                                              </div>
-                                            </template>
-                                            <p x-show="!evidenceItems(selectedRecommendation()).length" class="text-xs text-gray-500">
-                                              No structured evidence saved for this item.
-                                            </p>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  <div x-show="inspectorTab === 'structure'" class="p-4 lg:p-5 space-y-4">
-                                    <div class="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
-                                      <template x-for="item in structureSummaryCards()" :key="item.label">
-                                        <div class="rounded-xl border border-gray-200 bg-white p-4">
-                                          <p class="text-xs uppercase tracking-[0.18em] text-gray-400" x-text="item.label"></p>
-                                          <p class="mt-2 text-sm font-medium text-gray-900" x-text="item.value"></p>
-                                          <p class="mt-2 text-xs text-gray-500 leading-relaxed" x-text="item.note"></p>
-                                        </div>
-                                      </template>
-                                    </div>
-
-                                    <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
-                                      <div class="rounded-xl border border-gray-200 bg-white p-4">
-                                        <div class="flex items-center justify-between gap-3">
-                                          <div>
-                                            <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Heading plan</p>
-                                            <p class="mt-1 text-sm text-gray-600">Current capture plus structural additions implied by the recommendation set.</p>
-                                          </div>
-                                          <span class="px-2.5 py-1 rounded-full border border-gray-200 bg-surface-light text-xs text-gray-500"
-                                                x-text="headingPlan().length + ' sections'"></span>
-                                        </div>
-                                        <div class="mt-4 space-y-2">
-                                          <template x-for="item in headingPlan()" :key="item.text + item.kind">
-                                            <div class="rounded-lg border px-3 py-3"
-                                                 :class="item.kind === 'added' ? 'border-accent/30 bg-accent-light/40' : 'border-gray-200 bg-surface-light'">
-                                              <div class="flex items-center gap-2 text-xs mb-1">
-                                                <span class="px-2 py-0.5 rounded-full"
-                                                      :class="item.kind === 'added' ? 'bg-accent text-white' : 'bg-white border border-gray-200 text-gray-500'"
-                                                      x-text="item.kind === 'added' ? 'planned' : 'captured'"></span>
-                                                <span class="text-gray-400 uppercase tracking-wide" x-text="item.level"></span>
-                                              </div>
-                                              <p class="text-sm font-medium text-gray-900" x-text="item.text"></p>
-                                            </div>
-                                          </template>
-                                        </div>
-                                      </div>
-
-                                      <div class="space-y-4">
-                                        <div class="rounded-xl border border-gray-200 bg-white p-4">
-                                          <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Internal links</p>
-                                          <div class="mt-3 space-y-2">
-                                            <template x-for="link in topInternalLinks()" :key="link.url + link.anchor">
-                                              <a :href="link.url" target="_blank" rel="noopener"
-                                                 class="block rounded-lg bg-surface-light px-3 py-2 text-xs text-gray-700 hover:text-accent-dark hover:bg-accent-light/40 transition">
-                                                <span class="font-medium" x-text="link.anchor || 'Untitled link'"></span>
-                                                <span class="block text-gray-400 mt-1" x-text="shortenUrl(link.url)"></span>
-                                              </a>
-                                            </template>
-                                            <p x-show="!topInternalLinks().length" class="text-xs text-gray-500">No internal links captured.</p>
-                                          </div>
-                                        </div>
-
-                                        <div class="rounded-xl border border-gray-200 bg-white p-4">
-                                          <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Implementation notes</p>
-                                          <div class="mt-3 max-h-64 overflow-auto rounded-lg bg-surface-light px-3 py-3 text-xs text-gray-700 whitespace-pre-wrap"
-                                               x-text="implementationNotes()"></div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  <div x-show="inspectorTab === 'image'" class="p-4 lg:p-5 space-y-4">
-                                    <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem] items-start">
-                                      <div class="rounded-xl border border-gray-200 bg-white overflow-hidden">
-                                        <div class="aspect-[16/9] bg-surface-light flex items-center justify-center overflow-hidden">
-                                          <template x-if="heroImageUrl()">
-                                            <img :src="heroImageUrl()" :alt="heroImageAlt() || ''" class="w-full h-full object-cover" />
-                                          </template>
-                                          <template x-if="!heroImageUrl()">
-                                            <div class="px-6 text-center text-sm text-gray-500">
-                                              No hero or thumbnail asset was captured for this article.
-                                            </div>
-                                          </template>
-                                        </div>
-                                        <div class="p-4 border-t border-gray-100">
-                                          <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Image treatment</p>
-                                          <p class="mt-2 text-sm font-medium text-gray-900" x-text="heroImageLabel()"></p>
-                                          <p class="mt-2 text-sm text-gray-600" x-text="heroImageCaption()"></p>
-                                        </div>
-                                      </div>
-
-                                      <div class="space-y-4">
-                                        <template x-for="item in imageSummaryCards()" :key="item.label">
-                                          <div class="rounded-xl border border-gray-200 bg-white p-4">
-                                            <p class="text-xs uppercase tracking-[0.18em] text-gray-400" x-text="item.label"></p>
-                                            <p class="mt-2 text-sm font-medium text-gray-900" x-text="item.value"></p>
-                                            <p class="mt-2 text-xs text-gray-500 leading-relaxed whitespace-pre-wrap" x-text="item.note"></p>
-                                          </div>
-                                        </template>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              </section>
+                              </template>
                             </div>
-                          </div>
+                          </section>
+                        </template>
+
+                        <template x-if="!loading && panel === 'draft'">
+                          <section class="space-y-5">
+                            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                              <div>
+                                <h3 class="font-heading text-xl" x-text="article.title || article.slug"></h3>
+                                <p class="mt-2 text-sm text-gray-600" x-text="draftAuditLine()"></p>
+                              </div>
+                              <div class="flex items-center gap-3">
+                                <span class="px-2.5 py-1 rounded-full border border-accent/20 bg-accent-light text-accent-dark font-medium"
+                                      x-text="draftStatusLine()"></span>
+                                <button @click="openDraft()"
+                                        class="px-3 py-1 rounded text-xs font-medium border border-gray-200 hover:border-accent hover:text-accent-dark transition">
+                                  Open in new tab
+                                </button>
+                              </div>
+                            </div>
+
+                            <template x-if="draftReady()">
+                              <div class="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                                <iframe :src="optimisedUrl('html')"
+                                        :style="`height:${draftFrameHeight}px`"
+                                        @load="resizeDraftFrame($event)"
+                                        class="w-full border-0 bg-white"
+                                        title="Optimized article"></iframe>
+                              </div>
+                            </template>
+
+                            <template x-if="!draftReady()">
+                              <div class="rounded-xl border border-dashed border-gray-200 bg-white px-4 py-6 text-sm text-gray-500">
+                                The optimized draft has not passed the quality gate yet.
+                              </div>
+                            </template>
+
+                            <template x-if="implementedModules().length">
+                              <div class="rounded-xl border border-gray-200 bg-white p-4">
+                                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Implemented GEO modules</p>
+                                <p class="mt-3 text-sm text-gray-700" x-text="implementedModules().join(' · ')"></p>
+                              </div>
+                            </template>
+                          </section>
                         </template>
                       </div>
                     </td>
@@ -583,12 +329,10 @@
 <script>
 function dashboard() {
   return {
-    version: '0.3.2',
+    version: '0.5.6',
     state: null,
-    decisions: null,
-    gates: null,
     pollTimer: null,
-    expanded: null,
+    expanded: {slug: null, panel: null},
     runId: null,
     missingRun: false,
     errorMessage: '',
@@ -606,37 +350,31 @@ function dashboard() {
 
     async tick() {
       try {
-        const [stateResp, decisionsResp, gatesResp] = await Promise.all([
-          fetch(`/api/runs/${this.runId}/state`),
-          fetch(`/api/runs/${this.runId}/decisions`).catch(() => null),
-          fetch(`/api/runs/${this.runId}/gates`).catch(() => null),
-        ]);
+        const stateResp = await fetch(`/api/runs/${this.runId}/state`);
         if (!stateResp.ok) {
           this.errorMessage = `Run ${this.runId} is unavailable.`;
           return;
         }
-        const state = await stateResp.json();
-        const decisions = decisionsResp && decisionsResp.ok ? await decisionsResp.json() : {articles: {}};
-        const gates = gatesResp && gatesResp.ok ? await gatesResp.json() : {};
-        this.state = state;
-        this.decisions = decisions;
-        this.gates = gates;
+        this.state = await stateResp.json();
         this.errorMessage = '';
-      } catch (error) {
+      } catch (_) {
         this.errorMessage = 'Dashboard polling failed. Check the local MCP server.';
       }
     },
 
-    async resolveGate(gateName) {
+    formattedUpdatedAt() {
+      if (!this.state?.updated_at) return '';
       try {
-        await fetch(`/api/runs/${this.runId}/gate`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({gate: gateName, action: 'proceed'}),
+        const value = this.state.updated_at.replace(' ', 'T');
+        return new Date(value).toLocaleString('en-GB', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
         });
-        await this.tick();
-      } catch (error) {
-        alert('Failed to resolve gate: ' + error);
+      } catch (_) {
+        return this.state.updated_at;
       }
     },
 
@@ -647,6 +385,7 @@ function dashboard() {
         {key: 'crawl', label: 'Crawl', status: pipeline.crawl?.status || 'pending', detail: pipeline.crawl?.detail || (pipeline.crawl?.article_count ? `${pipeline.crawl.article_count} articles` : '')},
         {key: 'voice', label: 'Voice', status: pipeline.voice?.status || 'pending', detail: pipeline.voice?.detail || ''},
         {key: 'analysis', label: 'Analysis', status: pipeline.analysis?.status || 'pending', detail: pipeline.analysis?.detail || (pipeline.analysis?.gap_count ? `${pipeline.analysis.gap_count} gaps` : '')},
+        {key: 'evidence', label: 'Evidence', status: pipeline.evidence?.status || 'pending', detail: this.aggregateProgress(pipeline.evidence)},
         {key: 'recommendations', label: 'Recommendations', status: pipeline.recommendations?.status || 'pending', detail: this.aggregateProgress(pipeline.recommendations)},
         {key: 'draft', label: 'Draft', status: pipeline.draft?.status || 'pending', detail: this.aggregateProgress(pipeline.draft)},
       ];
@@ -654,12 +393,8 @@ function dashboard() {
 
     aggregateProgress(stage) {
       if (!stage) return '';
-      if (stage.completed_articles != null) {
-        return `${stage.completed_articles}/${stage.total || 0}`;
-      }
-      if (stage.count != null) {
-        return `${stage.count}`;
-      }
+      if (stage.completed_articles != null) return `${stage.completed_articles}/${stage.total || 0}`;
+      if (stage.count != null) return `${stage.count}`;
       return '';
     },
 
@@ -669,8 +404,29 @@ function dashboard() {
       return null;
     },
 
-    toggleExpanded(slug) {
-      this.expanded = this.expanded === slug ? null : slug;
+    togglePanel(slug, panel) {
+      if (this.expanded.slug === slug && this.expanded.panel === panel) {
+        this.expanded = {slug: null, panel: null};
+        return;
+      }
+      this.expanded = {slug, panel};
+    },
+
+    panelOpen(slug) {
+      return this.expanded.slug === slug;
+    },
+
+    panelButtonLabel(slug, panel, label) {
+      return this.expanded.slug === slug && this.expanded.panel === panel ? 'Close' : label;
+    },
+
+    recommendationsReady(article) {
+      return article?.stages?.recommendations?.status === 'completed';
+    },
+
+    draftVisible(article) {
+      const stage = article?.stages?.draft;
+      return stage?.status === 'completed' && stage?.quality_gate === 'passed';
     },
 
     pill(status, detail) {
@@ -690,21 +446,20 @@ function dashboard() {
     },
 
     recSummary(article) {
-      const stage = article.stages?.recommendations;
+      const stage = article?.stages?.recommendations;
       if (!stage || stage.status !== 'completed') return '';
       const parts = [];
-      const count = stage.recommendation_count ?? stage.count;
-      const critical = stage.critical_count ?? stage.critical;
-      if (count) parts.push(`${count} recs`);
-      if (critical) parts.push(`${critical} critical`);
+      if (stage.recommendation_count) parts.push(`${stage.recommendation_count} recs`);
+      if (stage.critical_count) parts.push(`${stage.critical_count} critical`);
       return parts.join(' · ');
     },
 
     draftSummary(article) {
-      const stage = article.stages?.draft;
-      if (!stage || stage.status !== 'completed') return '';
-      if (stage.audit_after) return `${stage.audit_after}/40`;
-      return 'ready';
+      const stage = article?.stages?.draft;
+      if (!stage) return '';
+      if (stage.status === 'failed' || stage.quality_gate === 'partial') return 'blocked';
+      if (stage.status === 'completed' && stage.audit_after) return `${stage.audit_after}/40`;
+      return '';
     },
 
     finalAudit(article) {
@@ -712,9 +467,13 @@ function dashboard() {
     },
 
     scoreText(article) {
-      const before = article?.stages?.draft?.audit_before ?? article?.stages?.recommendations?.score ?? '?';
-      const after = article?.stages?.draft?.audit_after || '?';
-      return `${before} → ${after}`;
+      const draft = article?.stages?.draft;
+      if (draft?.audit_after != null) {
+        const before = draft.audit_before ?? article?.stages?.recommendations?.score_before ?? '?';
+        return `${before} → ${draft.audit_after}`;
+      }
+      const target = article?.stages?.recommendations?.score_target;
+      return target ? `→ ${target}` : '—';
     },
 
     thumbnailUrl(article) {
@@ -724,22 +483,6 @@ function dashboard() {
       relative = relative.replace(/^\/+/, '');
       if (!relative.startsWith('media/')) relative = `media/${relative.replace(/^media\//, '')}`;
       return `/api/runs/${this.runId}/${relative}`;
-    },
-
-    articlePreviewUrl(article) {
-      return `/api/runs/${this.runId}/article-preview/${article.slug}.html`;
-    },
-
-    recommendationsUrl(article) {
-      return `/api/runs/${this.runId}/recommendations/${article.slug}`;
-    },
-
-    optimisedUrl(article, kind) {
-      const slug = article.slug;
-      if (kind === 'md') return `/api/runs/${this.runId}/optimised/${slug}.md`;
-      if (kind === 'html') return `/api/runs/${this.runId}/optimised/${slug}.html`;
-      if (kind === 'diff') return `/api/runs/${this.runId}/optimised/${slug}.diff.md`;
-      return '#';
     },
 
     shortenUrl(url) {
@@ -754,18 +497,16 @@ function dashboard() {
   };
 }
 
-function articleDetail(article) {
+function articleDetail(article, panel) {
   return {
     article,
+    panel,
     slug: article?.slug,
     loading: true,
     articleData: null,
     recommendations: null,
-    decisions: null,
-    handoffText: '',
-    schemaData: null,
-    activeRecId: null,
-    inspectorTab: 'article',
+    manifest: null,
+    draftFrameHeight: 1200,
 
     runId() {
       return window.location.pathname.match(/\/runs\/([^\/]+)\/?/)?.[1];
@@ -775,48 +516,69 @@ function articleDetail(article) {
       this.loading = true;
       try {
         const runId = this.runId();
-        const draftReady = this.draftReady();
-        const [articleResp, recsResp, decisionsResp, handoffResp, schemaResp] = await Promise.all([
+        const [articleResp, recsResp, manifestResp] = await Promise.all([
           fetch(`/api/runs/${runId}/articles/${this.slug}`).then(r => r.ok ? r.json() : null),
           fetch(`/api/runs/${runId}/recommendations/${this.slug}`).then(r => r.ok ? r.json() : null),
-          fetch(`/api/runs/${runId}/decisions`).then(r => r.ok ? r.json() : ({articles: {}})),
-          draftReady ? fetch(`/api/runs/${runId}/optimised/${this.slug}.handoff.md`).then(r => r.ok ? r.text() : '') : Promise.resolve(''),
-          draftReady ? fetch(`/api/runs/${runId}/optimised/${this.slug}.schema.json`).then(r => r.ok ? r.json() : null) : Promise.resolve(null),
+          fetch(`/api/runs/${runId}/optimised/${this.slug}.manifest.json`).then(r => r.ok ? r.json() : null).catch(() => null),
         ]);
         this.articleData = articleResp;
-        this.recommendations = recsResp;
-        this.decisions = decisionsResp.articles?.[this.slug] || {recs: {}};
-        this.handoffText = handoffResp || '';
-        this.schemaData = schemaResp;
-        this.activeRecId = this.recommendationList()[0] ? this.recId(this.recommendationList()[0]) : null;
+        this.recommendations = this.normalizeArtifact(recsResp);
+        this.manifest = this.normalizeArtifact(manifestResp);
       } catch (_) {
         this.articleData = null;
         this.recommendations = null;
-        this.handoffText = '';
-        this.schemaData = null;
+        this.manifest = null;
       } finally {
         this.loading = false;
       }
     },
 
-    draftReady() {
-      return this.article?.stages?.draft?.status === 'completed';
+    liveArticleUrl() {
+      return this.articleData?.url || this.article?.url || '#';
+    },
+
+    sourceIntro() {
+      const intro = this.articleData?.summary?.intro_paragraph;
+      if (intro) return intro;
+      const body = this.articleData?.body_md || '';
+      const paragraphs = body
+        .split(/\n\s*\n/)
+        .map(chunk => chunk.trim())
+        .filter(chunk => chunk && !chunk.startsWith('#') && !chunk.startsWith('- ') && !chunk.startsWith('* '));
+      return paragraphs[0] || 'No captured intro paragraph.';
     },
 
     recommendationList() {
       return this.recommendations?.recommendations || [];
     },
 
-    criticalCount() {
-      return this.recommendations?.critical_count ?? this.recommendationList().filter(rec => rec.severity === 'critical').length;
+    articleTypeLabel() {
+      return this.recommendations?.article_type || 'unknown';
     },
 
-    decisionSummary() {
-      const recs = this.recommendationList();
-      if (!recs.length) return 'awaiting pass';
-      const accepted = recs.filter(rec => this.decisions?.recs?.[this.recId(rec)] === 'accept').length;
-      const rejected = recs.filter(rec => this.decisions?.recs?.[this.recId(rec)] === 'reject').length;
-      return `${accepted} accepted · ${rejected} rejected`;
+    recommendationStatusLine() {
+      const count = this.recommendations?.recommendation_count ?? this.recommendationList().length ?? 0;
+      const critical = this.recommendations?.critical_count ?? this.recommendationList().filter(rec => rec.required || rec.severity === 'critical').length;
+      return `${count} recommendations${critical ? ` · ${critical} critical` : ''}`;
+    },
+
+    recommendationAuditLine() {
+      const audit = this.recommendations?.audit || {};
+      const before = audit.score_before ?? audit.score ?? '?';
+      const target = audit.score_target ?? '?';
+      return `${before}/40 -> ${target}/40`;
+    },
+
+    recommendationWhy(rec) {
+      return rec.why_it_matters || rec.rationale || rec.description || 'No rationale saved.';
+    },
+
+    recommendationImplementation(rec) {
+      return rec.implementation || rec.concrete_fix || rec.fix || 'No implementation instruction saved.';
+    },
+
+    moduleList(rec) {
+      return rec.module_keys || rec.auto_fix?.module_keys || [];
     },
 
     severityTone(severity) {
@@ -826,304 +588,72 @@ function articleDetail(article) {
       return 'bg-gray-100 text-gray-600';
     },
 
-    decisionTone(recId, active = false) {
-      if (active) return 'border-accent bg-accent-light/50 shadow-sm';
-      if (this.decisions?.recs?.[recId] === 'accept') return 'border-accent/30 bg-accent-light/20';
-      if (this.decisions?.recs?.[recId] === 'reject') return 'border-gray-200 bg-gray-50 opacity-70';
-      return 'border-gray-200 bg-white hover:border-accent/40 hover:bg-accent-light/20';
+    draftReady() {
+      const stage = this.article?.stages?.draft;
+      return stage?.status === 'completed' && stage?.quality_gate === 'passed';
     },
 
-    decisionPillTone(recId) {
-      const decision = this.decisions?.recs?.[recId];
-      if (decision === 'accept') return 'bg-accent text-white';
-      if (decision === 'reject') return 'bg-gray-200 text-gray-600';
-      return 'bg-white border border-gray-200 text-gray-500';
+    draftAuditLine() {
+      const before = this.manifest?.audit_before ?? this.article?.stages?.draft?.audit_before ?? this.recommendations?.audit?.score_before ?? '?';
+      const after = this.manifest?.audit_after ?? this.article?.stages?.draft?.audit_after ?? '?';
+      return `Audit ${before}/40 -> ${after}/40`;
     },
 
-    decisionLabel(recId) {
-      const decision = this.decisions?.recs?.[recId];
-      if (decision === 'accept') return 'accepted';
-      if (decision === 'reject') return 'rejected';
-      return 'undecided';
+    draftStatusLine() {
+      const status = this.manifest?.quality_gate?.status || this.article?.stages?.draft?.quality_gate || 'passed';
+      return status === 'passed' ? 'Draft ready' : `Draft ${status}`;
     },
 
-    selectRecommendation(recId) {
-      this.activeRecId = recId;
+    implementedModules() {
+      return this.manifest?.implemented_modules || [];
     },
 
-    selectedRecommendation() {
-      const recs = this.recommendationList();
-      if (!recs.length) return null;
-      return recs.find(rec => this.recId(rec) === this.activeRecId) || recs[0];
-    },
-
-    selectedRecommendationId() {
-      const rec = this.selectedRecommendation();
-      return rec ? this.recId(rec) : 'No recommendation selected';
-    },
-
-    selectedRecommendationTitle() {
-      const rec = this.selectedRecommendation();
-      if (rec) return rec.title || rec.heading || 'Recommendation';
-      return 'This inspector stays pinned to the article so you can review recommendations and the implementation side by side.';
-    },
-
-    selectedRecommendationBody() {
-      const rec = this.selectedRecommendation();
-      if (!rec) return 'When recommendations arrive, pick one from the left rail to keep the article preview in place while you review the implementation.';
-      return this.recBody(rec) || rec.rationale || 'No detailed recommendation copy saved.';
-    },
-
-    selectedLiftItems() {
-      const items = Object.entries(this.selectedRecommendation()?.per_engine_lift || {}).map(([engine, lift]) => ({engine, lift}));
-      if (items.length) return items;
-      return [
-        {engine: 'Coverage', lift: 'Review in context'},
-        {engine: 'Structure', lift: 'Bound to article'},
-        {engine: 'Proof', lift: 'See evidence rail'},
-      ];
-    },
-
-    auditDeltaLabel() {
-      const before = this.article?.stages?.draft?.audit_before ?? this.recommendations?.audit?.score ?? '?';
-      const after = this.article?.stages?.draft?.audit_after ?? 'pending';
-      return `${before}/40 → ${after}/40`;
-    },
-
-    articleInspectorSummary() {
-      if (!this.draftReady()) return 'The optimized draft has not been written yet. You can still inspect the source article, current structure, and recommendation evidence.';
-      const count = this.recommendationList().length;
-      return `The live draft preview is loaded on the left. ${count ? `${count} recommendations` : 'No recommendations'} are bound to this article, and the structure/image tabs surface the implementation details outside the body copy itself.`;
-    },
-
-    structureSummaryCards() {
-      const structure = this.articleData?.structure || {};
-      const meta = this.articleData?.meta || {};
-      const og = meta.og || {};
-      const twitter = meta.twitter || {};
-      const internalLinks = this.articleData?.links?.internal || [];
-      const cta = this.articleData?.cta?.primary || [];
-      return [
-        {
-          label: 'Meta package',
-          value: this.draftReady() ? 'Draft head tags shipped' : (meta.description ? 'Source meta captured' : 'Meta still sparse'),
-          note: this.draftReady()
-            ? 'Open the HTML or handoff note to inspect description, OG, and Twitter tags.'
-            : (meta.description || 'The captured article is missing or underusing snippet-oriented metadata.'),
-        },
-        {
-          label: 'Schema',
-          value: this.schemaTypeLabel(),
-          note: this.schemaData ? 'Structured data was saved alongside the draft output.' : 'No optimized schema artifact saved yet.',
-        },
-        {
-          label: 'Internal links',
-          value: `${internalLinks.length} captured links`,
-          note: internalLinks.length ? 'The rail below shows the top internal destinations captured from the source article.' : 'No internal links were captured from the source article.',
-        },
-        {
-          label: 'CTA',
-          value: cta.length ? cta.map(item => item.text).join(' · ') : 'No CTA captured',
-          note: this.draftReady() ? 'Use the handoff notes to verify CTA and conversion path changes.' : 'This reflects the source article only until a draft is produced.',
-        },
-      ];
-    },
-
-    headingPlan() {
-      const structure = this.articleData?.structure || {};
-      const headingTree = Array.isArray(structure.heading_tree) ? structure.heading_tree : [];
-      const current = [];
-      if (structure.h1) current.push({kind: 'captured', level: 'h1', text: structure.h1});
-      headingTree.forEach(text => current.push({kind: 'captured', level: 'h2', text}));
-      const planned = this.recommendationList()
-        .map(rec => rec?.auto_fix?.proposed_heading)
-        .filter(Boolean)
-        .map(text => ({kind: 'added', level: 'h2', text}));
-      const seen = new Set();
-      return [...current, ...planned].filter(item => {
-        const key = `${item.level}:${item.text}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    },
-
-    topInternalLinks() {
-      return (this.articleData?.links?.internal || []).slice(0, 6);
-    },
-
-    implementationNotes() {
-      if (this.handoffText) return this.handoffText;
-      const rec = this.selectedRecommendation();
-      return rec?.fix || rec?.rationale || 'No handoff note has been saved for this article yet.';
-    },
-
-    heroImageUrl() {
-      const mediaImage = this.articleData?.media?.images?.[0]?.url;
-      const ogImage = this.articleData?.meta?.og?.image;
-      if (mediaImage) return mediaImage;
-      if (ogImage) return ogImage;
-      if (this.article?.thumbnail) {
-        const relative = this.article.thumbnail.replace(/^\/+/, '').replace(/^.*\/outputs\//, '');
-        const mediaPath = relative.startsWith('media/') ? relative : `media/${relative.replace(/^media\//, '')}`;
-        return `/api/runs/${this.runId()}/${mediaPath}`;
-      }
-      return '';
-    },
-
-    heroImageAlt() {
-      return this.articleData?.media?.images?.[0]?.alt || '';
-    },
-
-    heroImageLabel() {
-      if (this.articleData?.media?.images?.[0]?.url) return 'Captured hero image';
-      if (this.articleData?.meta?.og?.image) return 'Social preview image';
-      if (this.article?.thumbnail) return 'Run thumbnail';
-      return 'No image captured';
-    },
-
-    heroImageCaption() {
-      if (this.heroImageAlt()) return this.heroImageAlt();
-      if (this.articleData?.meta?.description) return this.articleData.meta.description;
-      return 'This panel keeps the media treatment visible while you review the article and structural changes.';
-    },
-
-    imageSummaryCards() {
-      const og = this.articleData?.meta?.og || {};
-      const twitter = this.articleData?.meta?.twitter || {};
-      const author = this.articleData?.trust?.author || {};
-      const thumbnail = this.article?.thumbnail ? 'Captured and stored in run media' : 'No saved thumbnail';
-      return [
-        {
-          label: 'Alt text',
-          value: this.heroImageAlt() || 'No alt text saved',
-          note: 'Pulled from the captured article media payload.',
-        },
-        {
-          label: 'OG image',
-          value: og.image || 'Not set in source capture',
-          note: this.draftReady() ? 'Check the draft HTML for final OG tags if the source article had gaps.' : 'Source capture only until a draft is produced.',
-        },
-        {
-          label: 'Twitter image',
-          value: twitter.image || twitter.card || 'No Twitter image or card captured',
-          note: 'Social card fields surface here so you can review image discoverability without opening raw JSON.',
-        },
-        {
-          label: 'Author identity',
-          value: author.name ? `${author.name}${author.role ? ` · ${author.role}` : ''}` : 'No author metadata captured',
-          note: author.photo ? `Author photo available: ${author.photo}` : thumbnail,
-        },
-      ];
-    },
-
-    schemaTypeLabel() {
-      if (this.schemaData?.['@type']) {
-        return Array.isArray(this.schemaData['@type']) ? this.schemaData['@type'].join(', ') : this.schemaData['@type'];
-      }
-      const types = this.articleData?.schema?.types_present || [];
-      return types.length ? types.join(', ') : 'No schema captured';
-    },
-
-    async setDecision(recId, action) {
-      const runId = this.runId();
-      await fetch(`/api/runs/${runId}/actions`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action, slug: this.slug, rec_id: recId}),
-      });
-      if (!this.decisions) this.decisions = {recs: {}};
-      if (!this.decisions.recs) this.decisions.recs = {};
-      this.decisions.recs[recId] = action;
-    },
-
-    async approve() {
-      const runId = this.runId();
-      await fetch(`/api/runs/${runId}/actions`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action: 'approve', slug: this.slug}),
-      });
-      alert(`Approved. Review the output in runs/${runId}/outputs/optimised/${this.slug}.html`);
-    },
-
-    async rerun() {
-      const runId = this.runId();
-      await fetch(`/api/runs/${runId}/actions`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action: 'rerun_article', slug: this.slug}),
-      });
-      alert(`Re-run requested. Run /blog-optimiser --resume ${runId} in Claude Desktop to continue.`);
-    },
-
-    openPreview() {
-      const runId = this.runId();
-      window.open(`/api/runs/${runId}/optimised/${this.slug}.html`, '_blank');
-    },
-
-    articlePreviewUrl() {
-      const runId = this.runId();
-      return `/api/runs/${runId}/article-preview/${this.slug}.html`;
-    },
-
-    recommendationsUrl() {
-      const runId = this.runId();
-      return `/api/runs/${runId}/recommendations/${this.slug}`;
+    openDraft() {
+      window.open(this.optimisedUrl('html'), '_blank');
     },
 
     optimisedUrl(kind) {
       const runId = this.runId();
-      if (kind === 'md') return `/api/runs/${runId}/optimised/${this.slug}.md`;
       if (kind === 'html') return `/api/runs/${runId}/optimised/${this.slug}.html`;
-      if (kind === 'diff') return `/api/runs/${runId}/optimised/${this.slug}.diff.md`;
-      if (kind === 'handoff') return `/api/runs/${runId}/optimised/${this.slug}.handoff.md`;
-      if (kind === 'schema') return `/api/runs/${runId}/optimised/${this.slug}.schema.json`;
+      if (kind === 'manifest') return `/api/runs/${runId}/optimised/${this.slug}.manifest.json`;
       return '#';
     },
 
-    articleMetaLine() {
-      if (!this.articleData) return 'No article metadata captured.';
-      const trust = this.articleData.trust || {};
-      const author = trust.author || {};
-      const structure = this.articleData.structure || {};
-      const parts = [];
-      if (author.name) parts.push(author.name);
-      if (author.role) parts.push(author.role);
-      if (trust.published_at) parts.push(trust.published_at);
-      if (structure.word_count) parts.push(`${structure.word_count} words`);
-      return parts.join(' · ');
-    },
-
-    articleBodyPreview() {
-      return this.articleData?.body_md || 'No captured article body.';
-    },
-
-    summaryLine() {
-      const auditScore = this.recommendations?.audit?.score ?? this.recommendations?.rubric_score ?? this.recommendations?.score?.total ?? this.recommendations?.score ?? '?';
-      const articleType = this.recommendations?.article_type || this.recommendations?.article_classification || this.recommendations?.mode || 'unknown type';
-      const count = this.recommendations?.recommendation_count ?? this.recommendations?.recommendations?.length ?? 0;
-      return `Audit: ${auditScore}/40 · ${articleType} · ${count} recommendations`;
-    },
-
-    draftMetaLine() {
-      const stage = this.article?.stages?.draft;
-      if (!stage || stage.status !== 'completed') return 'No draft artefacts saved for this article yet.';
-      return `Audit ${stage.audit_before ?? '?'} → ${stage.audit_after ?? '?'}`;
+    resizeDraftFrame(event) {
+      try {
+        const frame = event.target;
+        const doc = frame.contentDocument || frame.contentWindow.document;
+        const height = Math.max(
+          doc.documentElement?.scrollHeight || 0,
+          doc.body?.scrollHeight || 0,
+          960
+        );
+        this.draftFrameHeight = height + 24;
+      } catch (_) {
+        this.draftFrameHeight = 1200;
+      }
     },
 
     recId(rec) {
       return String(rec.id ?? rec.rank ?? rec.title ?? 'rec');
     },
 
-    recBody(rec) {
-      return rec.concrete_fix || rec.fix || rec.description || rec.rationale || '';
+    normalizeArtifact(value) {
+      let current = value;
+      for (let i = 0; i < 4; i += 1) {
+        if (typeof current !== 'string') return current;
+        try {
+          current = JSON.parse(current);
+        } catch (_) {
+          return current;
+        }
+      }
+      return current;
     },
 
     evidenceItems(rec) {
       if (!rec) return [];
       const evidence = rec.evidence || {};
-      const items = [];
       if (Array.isArray(evidence)) {
         return evidence.map((item, index) => ({
           label: `evidence ${index + 1}`,
@@ -1131,6 +661,7 @@ function articleDetail(article) {
           url: '',
         }));
       }
+      const items = [];
       for (const [label, value] of Object.entries(evidence)) {
         if (!value) continue;
         if (typeof value === 'string') {
@@ -1147,16 +678,6 @@ function articleDetail(article) {
 
     prettyLabel(label) {
       return String(label).replace(/_/g, ' ');
-    },
-
-    shortenUrl(url) {
-      if (!url) return '';
-      try {
-        const parsed = new URL(url);
-        return parsed.hostname + parsed.pathname.replace(/\/$/, '');
-      } catch (_) {
-        return url.length > 40 ? url.slice(0, 40) + '…' : url;
-      }
     },
   };
 }

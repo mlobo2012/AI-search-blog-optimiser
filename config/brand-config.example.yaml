@@ -6,6 +6,9 @@
 #
 # Actual per-brand config is written automatically to
 # .context/brands/{peec_project_id}/config.yaml on first run.
+# Keep the Peec linkage single-project for the plugin runtime. The project itself should be made
+# usable via topics and tags, and the plugin should match prompts first rather than assuming topics
+# always exist.
 
 brand:
   name: Granola                          # friendly display name
@@ -19,6 +22,14 @@ runtime:
   competitor_crawl_cap: 5                # max competitor URLs crawled per article
   recommender_concurrency: 3             # parallel fan-out cap
   generator_concurrency: 3
+
+reviewers:
+  path: sites/{site_key}/reviewers.json  # site-scoped reviewer source of truth in the writable data root
+  selection_rules:
+    prefer_source_author_if_full_name_and_role_relevant: true
+    fallback_to_site_reviewers: true
+    require_publicly_verifiable_people: true
+    fail_if_no_valid_reviewer_exists: true
 
 branding:
   theme: ai-heroes                       # dashboard theme — currently only 'ai-heroes'

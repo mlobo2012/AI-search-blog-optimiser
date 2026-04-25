@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI Search Blog Optimiser — local dashboard server (v0.3.2).
+AI Search Blog Optimiser — local dashboard server (v0.5.6).
 
 Two run modes:
   - Default (MCP stdio): Claude Cowork spawns this as its MCP server. The MCP
@@ -25,7 +25,9 @@ import html
 import http.server
 import json
 import os
+import re
 import signal
+import shutil
 import socket
 import socketserver
 import subprocess
@@ -40,18 +42,37 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
+try:
+    from dashboard.quality_gate import build_article_manifest
+except ImportError:
+    from quality_gate import build_article_manifest
+
 # ---------------------------------------------------------------------------
 # Paths + state
 # ---------------------------------------------------------------------------
 #
 # Important: in Claude Cowork, ${CLAUDE_PLUGIN_ROOT} is mounted READ-ONLY for
 # sub-agents. Static assets (HTML, CSS, fonts, logos) can be served from there,
-# but all WRITABLE state (runs, voice baselines, decisions) must live in a
+# but all WRITABLE state (runs, voice baselines, gates) must live in a
 # user-writable location. Default roots are platform-native and versioned under
 # v3. Override with BLOG_OPTIMISER_DATA_ROOT for tests/dev only.
 
-VERSION = "0.3.2"
+VERSION = "0.5.6"
 DEFAULT_GATE_TIMEOUT_SECONDS = 300
+BUNDLE_READ_ROOTS = ("references", "skills")
+JSON_STRINGISH_PREFIXES = tuple('{["-0123456789tfn')
+CRAWL_DISCOVERED_RE = re.compile(r"Crawler discovered (\d+) articles?")
+LEGACY_DRAFT_STATUS_MAP = {
+    "blocked": "failed",
+    "completed": "completed",
+    "draft_completed": "completed",
+    "draft_failed": "failed",
+    "failed": "failed",
+    "generating": "running",
+    "pending_validation": "running",
+    "ready_for_review": "completed",
+    "running": "running",
+}
 
 
 def _default_data_dir() -> Path:
@@ -63,9 +84,80 @@ def _default_data_dir() -> Path:
     return Path.home() / ".local" / "share" / "ai-search-blog-optimiser" / "v3"
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _legacy_import_marker(data_dir: Path) -> Path:
+    return data_dir / ".legacy-import.json"
+
+
+def _write_legacy_import_marker(data_dir: Path, payload: dict[str, Any]) -> None:
+    marker = _legacy_import_marker(data_dir)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _import_legacy_runtime_data(data_dir: Path) -> None:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    marker = _legacy_import_marker(data_dir)
+    if marker.exists():
+        return
+
+    if _truthy_env("BLOG_OPTIMISER_SKIP_LEGACY_IMPORT"):
+        _write_legacy_import_marker(data_dir, {
+            "status": "skipped",
+            "reason": "disabled-by-env",
+            "at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+        return
+
+    legacy_dir = _default_data_dir()
+    if legacy_dir == data_dir:
+        _write_legacy_import_marker(data_dir, {
+            "status": "skipped",
+            "reason": "same-path",
+            "at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+        return
+
+    if any(data_dir.iterdir()):
+        _write_legacy_import_marker(data_dir, {
+            "status": "skipped",
+            "reason": "target-not-empty",
+            "at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+        return
+
+    imported_paths: list[str] = []
+    if legacy_dir.exists():
+        for name in ("runs", "sites"):
+            source = legacy_dir / name
+            target = data_dir / name
+            if not source.exists():
+                continue
+            shutil.copytree(source, target, dirs_exist_ok=True)
+            imported_paths.append(name)
+
+    _write_legacy_import_marker(data_dir, {
+        "status": "imported" if imported_paths else "skipped",
+        "reason": "copied" if imported_paths else "legacy-missing",
+        "at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source": str(legacy_dir),
+        "copied_paths": imported_paths,
+    })
+
+
 def _resolve_data_dir() -> Path:
     override = os.environ.get("BLOG_OPTIMISER_DATA_ROOT")
-    return Path(override).expanduser().resolve() if override else _default_data_dir()
+    if override:
+        return Path(override).expanduser().resolve()
+    plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")
+    if plugin_data:
+        data_dir = Path(plugin_data).expanduser().resolve()
+        _import_legacy_runtime_data(data_dir)
+        return data_dir
+    return _default_data_dir()
 
 PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", Path(__file__).resolve().parent.parent))
 DASHBOARD_DIR = PLUGIN_ROOT / "dashboard"
@@ -113,17 +205,42 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     tmp.replace(path)
 
 
+def _coerce_json_payload(value: Any) -> tuple[Any, bool]:
+    current = value
+    changed = False
+    for _ in range(4):
+        if not isinstance(current, str):
+            return current, changed
+        candidate = current.strip()
+        if not candidate or candidate[0].lower() not in JSON_STRINGISH_PREFIXES:
+            return current, changed
+        try:
+            current = json.loads(candidate)
+        except json.JSONDecodeError:
+            return current, changed
+        changed = True
+    return current, changed
+
+
 def _read_json(path: Path) -> Any:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+    normalized, changed = _coerce_json_payload(data)
+    if changed:
+        try:
+            _write_json(path, normalized)
+        except Exception:
+            pass
+    return normalized
 
 
 def _write_json(path: Path, data: Any) -> None:
-    _atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False))
+    normalized, _ = _coerce_json_payload(data)
+    _atomic_write(path, json.dumps(normalized, indent=2, ensure_ascii=False))
 
 
 def _now_iso() -> str:
@@ -183,7 +300,16 @@ def _site_paths(site_key: str) -> dict[str, Path]:
         "site_dir": site_dir,
         "voice_markdown_path": site_dir / "brand-voice.md",
         "voice_meta_path": site_dir / "voice.json",
+        "reviewers_path": site_dir / "reviewers.json",
     }
+
+
+def _ensure_site_scaffold(site_key: str) -> dict[str, Path]:
+    site_paths = _site_paths(site_key)
+    site_paths["site_dir"].mkdir(parents=True, exist_ok=True)
+    if not site_paths["reviewers_path"].exists():
+        _write_json(site_paths["reviewers_path"], [])
+    return site_paths
 
 
 def _output_paths(run_dir: Path) -> dict[str, Path]:
@@ -191,6 +317,7 @@ def _output_paths(run_dir: Path) -> dict[str, Path]:
     return {
         "outputs_dir": outputs_dir,
         "articles_dir": outputs_dir / "articles",
+        "evidence_dir": outputs_dir / "evidence",
         "recommendations_dir": outputs_dir / "recommendations",
         "optimised_dir": outputs_dir / "optimised",
         "media_dir": outputs_dir / "media",
@@ -206,7 +333,6 @@ def _build_run_paths(run_dir: Path) -> dict[str, str]:
     paths: dict[str, str] = {
         "run_dir": str(run_dir),
         "state_path": str(run_dir / "state.json"),
-        "decisions_path": str(run_dir / "decisions.json"),
         "gates_path": str(run_dir / "gates.json"),
         "run_summary_path": str(run_dir / "run-summary.md"),
     }
@@ -253,7 +379,7 @@ def _list_runs() -> list[dict]:
         if not run_dir.is_dir():
             continue
         state_file = run_dir / "state.json"
-        state = _read_json(state_file) or {}
+        state = _load_state(state_file)
         entries.append({
             "run_id": run_dir.name,
             "path": str(run_dir),
@@ -266,6 +392,7 @@ ARTIFACT_NAMESPACES = [
     "run",
     "site",
     "articles",
+    "evidence",
     "recommendations",
     "optimised",
     "raw",
@@ -280,7 +407,7 @@ def _artifact_base_dir(run_id: str, namespace: str) -> Path:
     run_dir = RUNS_DIR / run_id
     if not run_dir.exists() or not run_dir.is_dir():
         raise ValueError(f"Run {run_id} does not exist")
-    state = _read_json(run_dir / "state.json") or {}
+    state = _load_state(run_dir / "state.json")
     output_paths = _output_paths(run_dir)
     mapping = {
         "run": run_dir,
@@ -289,6 +416,7 @@ def _artifact_base_dir(run_id: str, namespace: str) -> Path:
             or _site_paths(state.get("site_key", ""))["site_dir"]
         ),
         "articles": output_paths["articles_dir"],
+        "evidence": output_paths["evidence_dir"],
         "recommendations": output_paths["recommendations_dir"],
         "optimised": output_paths["optimised_dir"],
         "raw": output_paths["raw_dir"],
@@ -315,6 +443,22 @@ def _resolve_artifact_path(run_id: str, namespace: str, relative_path: str) -> t
     return base_dir, target
 
 
+def _resolve_bundle_path(relative_path: str) -> Path:
+    if not relative_path:
+        raise ValueError("relative_path is required")
+    relative = Path(relative_path)
+    if relative.is_absolute() or any(part in {"..", ""} for part in relative.parts):
+        raise ValueError(f"Unsafe relative_path: {relative_path}")
+    if not relative.parts or relative.parts[0] not in BUNDLE_READ_ROOTS:
+        allowed = ", ".join(sorted(BUNDLE_READ_ROOTS))
+        raise ValueError(f"Bundle reads are limited to: {allowed}")
+    plugin_root = PLUGIN_ROOT.resolve()
+    target = (plugin_root / relative).resolve()
+    if not str(target).startswith(str(plugin_root) + os.sep):
+        raise ValueError(f"Path escapes plugin root: {relative_path}")
+    return target
+
+
 def _validate_text_write(namespace: str, relative_path: str) -> None:
     if namespace == "run" and relative_path != "run-summary.md":
         raise ValueError("run namespace text writes are limited to run-summary.md")
@@ -325,8 +469,93 @@ def _validate_text_write(namespace: str, relative_path: str) -> None:
 def _validate_json_write(namespace: str, relative_path: str) -> None:
     if namespace == "run":
         raise ValueError("run namespace JSON writes are not allowed via artifact tools")
-    if namespace == "site" and relative_path != "voice.json":
-        raise ValueError("site namespace JSON writes are limited to voice.json")
+    if namespace == "site" and relative_path not in {"voice.json", "reviewers.json"}:
+        raise ValueError("site namespace JSON writes are limited to voice.json and reviewers.json")
+
+
+def _require_object(value: Any, label: str) -> dict[str, Any]:
+    normalized, _ = _coerce_json_payload(value)
+    if not isinstance(normalized, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return normalized
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _crawl_discovered_count(crawl: Any) -> int | None:
+    if not isinstance(crawl, dict):
+        return None
+    for candidate in (
+        crawl.get("discovered_count"),
+        crawl.get("articles_found"),
+    ):
+        count = _safe_int(candidate)
+        if count is not None:
+            return max(0, count)
+    detail = crawl.get("detail")
+    if isinstance(detail, str):
+        match = CRAWL_DISCOVERED_RE.search(detail)
+        if match:
+            return int(match.group(1))
+    count = _safe_int(crawl.get("article_count"))
+    if count is not None:
+        return max(0, count)
+    return None
+
+
+def _article_thumbnail(article: dict[str, Any]) -> str | None:
+    thumbnail = article.get("thumbnail")
+    if isinstance(thumbnail, str) and thumbnail:
+        return thumbnail
+    media = article.get("media")
+    if isinstance(media, dict):
+        candidate = media.get("thumbnail")
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
+def _article_state_fragment(article: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    slug = article["slug"]
+    fragment = dict(existing) if isinstance(existing, dict) else {"slug": slug}
+    fragment["slug"] = slug
+    if isinstance(article.get("url"), str) and article["url"]:
+        fragment["url"] = article["url"]
+    if isinstance(article.get("title"), str) and article["title"]:
+        fragment["title"] = article["title"]
+    thumbnail = _article_thumbnail(article)
+    if thumbnail:
+        fragment["thumbnail"] = thumbnail
+    stages = fragment.setdefault("stages", {})
+    if not isinstance(stages, dict):
+        stages = {}
+        fragment["stages"] = stages
+    crawl_stage = stages.setdefault("crawl", {})
+    if not isinstance(crawl_stage, dict):
+        crawl_stage = {}
+        stages["crawl"] = crawl_stage
+    crawl_stage["status"] = "completed"
+    structure = article.get("structure")
+    if isinstance(structure, dict):
+        word_count = _safe_int(structure.get("word_count"))
+        if word_count is not None and word_count >= 0:
+            crawl_stage["word_count"] = word_count
+    return fragment
+
+
+def _persisted_article_records(run_dir: Path) -> list[dict[str, Any]]:
+    articles_dir = _output_paths(run_dir)["articles_dir"]
+    records: list[dict[str, Any]] = []
+    for path in sorted(articles_dir.glob("*.json")):
+        payload = _read_json(path)
+        if isinstance(payload, dict) and isinstance(payload.get("slug"), str) and payload.get("slug"):
+            records.append(payload)
+    return records
 
 
 def _render_markdown_preview(markdown: str) -> str:
@@ -565,7 +794,7 @@ def _refresh_pipeline_aggregates(state: dict[str, Any]) -> None:
     if not articles:
         return
 
-    for stage_name in ("recommendations", "draft"):
+    for stage_name in ("analysis", "evidence", "recommendations", "draft"):
         existing = pipeline.get(stage_name)
         aggregate = dict(existing) if isinstance(existing, dict) else {}
         statuses = [
@@ -603,12 +832,119 @@ def _refresh_pipeline_aggregates(state: dict[str, Any]) -> None:
         pipeline["crawl"]["article_count"] = len(articles)
 
 
+def _article_manifest_if_present(run_dir: Path, article_slug: str) -> dict[str, Any] | None:
+    manifest_path = _output_paths(run_dir)["optimised_dir"] / f"{article_slug}.manifest.json"
+    manifest = _read_json(manifest_path)
+    return manifest if isinstance(manifest, dict) else None
+
+
+def _article_terminal_label(article: dict[str, Any], manifest: dict[str, Any] | None = None) -> str:
+    stages = article.get("stages") if isinstance(article.get("stages"), dict) else {}
+    draft_stage = stages.get("draft") if isinstance(stages, dict) and isinstance(stages.get("draft"), dict) else {}
+    if manifest and ((manifest.get("quality_gate") or {}).get("status") == "passed"):
+        return "draft-ready"
+    if draft_stage.get("status") == "completed" and draft_stage.get("quality_gate") == "passed":
+        return "draft-ready"
+    if draft_stage.get("status") == "failed":
+        return "blocked"
+    if draft_stage.get("status") == "running":
+        return "drafting"
+    if (stages.get("recommendations") or {}).get("status") == "completed":
+        return "ready-to-draft"
+    return "pending"
+
+
+def _run_terminal_status(state: dict[str, Any]) -> str:
+    articles = [item for item in state.get("articles", []) if isinstance(item, dict) and item.get("slug")]
+    if not articles:
+        return state.get("status", "running")
+
+    terminal = 0
+    passed = 0
+    failed = 0
+    for article in articles:
+        draft_stage = ((article.get("stages") or {}).get("draft") or {})
+        status = draft_stage.get("status")
+        if status in {"completed", "failed"}:
+            terminal += 1
+        if status == "completed":
+            passed += 1
+        elif status == "failed":
+            failed += 1
+
+    if terminal < len(articles):
+        return "running"
+    if passed and failed:
+        return "partial"
+    if failed and not passed:
+        return "failed"
+    return "completed"
+
+
+def _render_run_report(state: dict[str, Any], run_dir: Path) -> str:
+    articles = [item for item in state.get("articles", []) if isinstance(item, dict) and item.get("slug")]
+    draft_ready = 0
+    blocked = 0
+    lines = [
+        "# AI Search Blog Optimiser Report",
+        "",
+        f"- Run ID: `{state.get('run_id', run_dir.name)}`",
+        f"- Blog URL: {state.get('canonical_blog_url') or state.get('blog_url') or 'Unknown'}",
+        f"- Generated at: {_now_iso()}",
+        f"- Run status: `{_run_terminal_status(state)}`",
+        "",
+    ]
+
+    if articles:
+        for article in articles:
+            manifest = _article_manifest_if_present(run_dir, str(article.get("slug")))
+            label = _article_terminal_label(article, manifest)
+            if label == "draft-ready":
+                draft_ready += 1
+            elif label == "blocked":
+                blocked += 1
+        lines.extend([
+            "## Summary",
+            "",
+            f"- Articles processed: {len(articles)}",
+            f"- Draft-ready: {draft_ready}",
+            f"- Blocked: {blocked}",
+            "",
+            "## Articles",
+            "",
+        ])
+        for article in articles:
+            slug = str(article.get("slug"))
+            title = str(article.get("title") or slug)
+            draft_stage = ((article.get("stages") or {}).get("draft") or {})
+            manifest = _article_manifest_if_present(run_dir, slug)
+            label = _article_terminal_label(article, manifest)
+            blocker = ""
+            if manifest:
+                blocker = next(iter((manifest.get("quality_gate") or {}).get("blocking_issues") or []), "")
+            if not blocker:
+                blocker = str(draft_stage.get("blocker_summary") or "")
+            lines.append(f"- `{slug}`: {title} [{label}]")
+            if blocker:
+                lines.append(f"  Reason: {blocker}")
+        lines.append("")
+    else:
+        lines.extend([
+            "## Summary",
+            "",
+            "- No article records were persisted for this run.",
+            "",
+        ])
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 # ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
 
 class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
-    """Serve dashboard HTML + a small JSON API, handle POST actions.
+    """Serve dashboard HTML + a small JSON API, handle gate POSTs.
 
     Routes:
       GET  /                         → home / history page
@@ -617,8 +953,9 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
       GET  /api/runs/{run_id}/state  → state.json for a run
       GET  /api/runs/{run_id}/articles/{slug}  → article record
       GET  /api/runs/{run_id}/article-preview/{slug}.html  → rendered source article preview
+      GET  /api/runs/{run_id}/evidence/{slug}  → evidence pack for an article
       GET  /api/runs/{run_id}/recommendations/{slug}  → recs for an article
-      POST /api/runs/{run_id}/actions  → accept/reject/approve action
+      POST /api/runs/{run_id}/gate  → resolve a human review gate
       GET  /static/...               → static assets (CSS, JS, fonts, images)
 
     Everything else falls through to SimpleHTTPRequestHandler serving from DASHBOARD_DIR.
@@ -655,8 +992,6 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length).decode("utf-8") if length else "{}"
             payload = json.loads(body) if body else {}
-            if path.startswith("/api/runs/") and path.endswith("/actions"):
-                return self._handle_action(path, payload)
             if path.startswith("/api/runs/") and path.endswith("/gate"):
                 return self._handle_gate(path, payload)
             self.send_error(404, "Not Found")
@@ -730,8 +1065,8 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
         # /api/runs/{run_id}/state
         # /api/runs/{run_id}/articles/{slug}
         # /api/runs/{run_id}/article-preview/{slug}.html
+        # /api/runs/{run_id}/evidence/{slug}
         # /api/runs/{run_id}/recommendations/{slug}
-        # /api/runs/{run_id}/decisions
         parts = path.strip("/").split("/")
         if len(parts) < 4:
             self.send_error(400, "Malformed API path")
@@ -745,11 +1080,8 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         remainder = parts[3:]
         if remainder == ["state"]:
-            state = _read_json(run_dir / "state.json") or {}
+            state = _load_state(run_dir / "state.json")
             return self._serve_json(state)
-        if remainder == ["decisions"]:
-            decisions = _read_json(run_dir / "decisions.json") or {}
-            return self._serve_json(decisions)
         if remainder == ["gates"]:
             gates = _hydrate_gates(run_dir)
             return self._serve_json(gates)
@@ -758,6 +1090,12 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
             data = _read_json(output_paths["articles_dir"] / f"{remainder[1]}.json")
             if data is None:
                 self.send_error(404, "Article not found")
+                return
+            return self._serve_json(data)
+        if len(remainder) == 2 and remainder[0] == "evidence":
+            data = _read_json(output_paths["evidence_dir"] / f"{remainder[1]}.json")
+            if data is None:
+                self.send_error(404, "Evidence not found")
                 return
             return self._serve_json(data)
         if len(remainder) == 2 and remainder[0] == "article-preview":
@@ -787,6 +1125,10 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(404, "File not found")
                 return
             ext = target.suffix.lower()
+            if ext == ".json":
+                payload = _read_json(target)
+                if payload is not None:
+                    return self._serve_json(payload)
             ctype = {
                 ".html": "text/html; charset=utf-8",
                 ".md": "text/markdown; charset=utf-8",
@@ -806,7 +1148,7 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_error(404, "Unknown API route")
 
-    # ---- actions -----------------------------------------------------------
+    # ---- gates -------------------------------------------------------------
 
     def _handle_gate(self, path: str, payload: dict):
         """POST /api/runs/{run_id}/gate body: {"gate": "crawl_gate"|"voice_gate"|"recommend_gate", "action": "proceed"|"hold", "note": "..."}"""
@@ -833,39 +1175,6 @@ class DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
                 gate["user_note"] = note
             _write_json(gates_path, gates)
         self._serve_json({"ok": True, "gates": gates})
-
-    def _handle_action(self, path: str, payload: dict):
-        parts = path.strip("/").split("/")
-        run_id = parts[2]
-        run_dir = RUNS_DIR / run_id
-        if not run_dir.exists():
-            self.send_error(404, "Run not found")
-            return
-        action_type = payload.get("action")
-        if action_type not in {"accept", "reject", "approve", "reject_article", "rerun_article", "set_brand_role"}:
-            self.send_error(400, f"Unknown action: {action_type}")
-            return
-        slug = payload.get("slug")
-        rec_id = payload.get("rec_id")
-
-        decisions_path = run_dir / "decisions.json"
-        with STATE_LOCK:
-            decisions = _read_json(decisions_path) or {"articles": {}}
-            article_decisions = decisions["articles"].setdefault(slug or "_global", {"recs": {}, "approved": False})
-            if action_type in {"accept", "reject"} and rec_id:
-                article_decisions["recs"][rec_id] = action_type
-            if action_type == "approve":
-                article_decisions["approved"] = True
-            if action_type == "reject_article":
-                article_decisions["rejected"] = True
-            if action_type == "rerun_article":
-                article_decisions["rerun_requested"] = True
-            if action_type == "set_brand_role":
-                decisions["brand_role_override"] = payload.get("role")
-            decisions["updated_at"] = _now_iso()
-            _write_json(decisions_path, decisions)
-        self._serve_json({"ok": True, "decisions": decisions})
-
 
 # ---------------------------------------------------------------------------
 # HTTP server lifecycle
@@ -1064,7 +1373,6 @@ def run_http_daemon(port: int) -> None:
 #   - register_run: initialise a new runs/{ts}/ directory with an empty state.json
 #   - update_state: merge a state fragment into runs/{ts}/state.json
 #   - list_runs: return all runs
-#   - get_decisions: return runs/{ts}/decisions.json
 #   - get_dashboard_url: return the HTTP server URL (starting it if needed)
 #
 # Follows the MCP protocol 2024-11-05 (stdio transport). Responses are minimal but spec-compliant.
@@ -1089,7 +1397,7 @@ MCP_TOOLS = [
     },
     {
         "name": "register_run",
-        "description": "Initialise a new run directory at {data_dir}/runs/{run_id}/. Creates state.json, outputs/ sub-directories, decisions.json, and gates.json. Returns all absolute paths needed by the orchestrator plus the site-scoped voice baseline metadata.",
+        "description": "Initialise a new run directory at {data_dir}/runs/{run_id}/. Creates state.json, outputs/ sub-directories, and compatibility gate/report files. Peec is required for new runs.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1097,12 +1405,12 @@ MCP_TOOLS = [
                 "peec_project_id": {"type": "string"},
                 "refresh_voice": {"type": "boolean", "default": False},
             },
-            "required": ["blog_url"],
+            "required": ["blog_url", "peec_project_id"],
         },
     },
     {
         "name": "set_gate",
-        "description": "Write/update a gate in gates.json for the run. Used by the main session to pause the pipeline for human review. status='pending' opens the gate (dashboard shows Continue button); status='resolved' closes it. Gate timeout is enforced server-side when get_gates or the dashboard reads the gate.",
+        "description": "Deprecated compatibility tool. Write/update a gate in gates.json for a run. The dashboard no longer uses gate-driven control flow.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1118,7 +1426,7 @@ MCP_TOOLS = [
     },
     {
         "name": "get_gates",
-        "description": "Return current gates.json for a run. Pending gates are auto-resolved server-side when their timeout expires; callers should trust the returned status and never infer timeout themselves.",
+        "description": "Deprecated compatibility tool. Return current gates.json for a run.",
         "inputSchema": {
             "type": "object",
             "properties": {"run_id": {"type": "string"}},
@@ -1135,6 +1443,41 @@ MCP_TOOLS = [
                 "fragment": {"type": "object"},
             },
             "required": ["run_id", "fragment"],
+        },
+    },
+    {
+        "name": "record_crawl_discovery",
+        "description": "Persist the number of article URLs discovered during crawl before per-article fetches begin. Does not create article rows by itself.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "discovered_count": {"type": "integer", "minimum": 0},
+            },
+            "required": ["run_id", "discovered_count"],
+        },
+    },
+    {
+        "name": "record_crawled_article",
+        "description": "Atomically write one captured article record to articles/{slug}.json and refresh its crawl stage in state.json.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article": {"type": "object"},
+            },
+            "required": ["run_id", "article"],
+        },
+    },
+    {
+        "name": "finalize_crawl",
+        "description": "Reconcile crawl state against the real articles/*.json files on disk. Prunes ghost article rows, updates crawl counts, and returns the persisted slugs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+            },
+            "required": ["run_id"],
         },
     },
     {
@@ -1192,6 +1535,18 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "read_bundle_text",
+        "description": "Read a UTF-8 text file bundled with the installed plugin. Use this for read-only plugin references such as references/*.md and skills/*/SKILL.md.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "relative_path": {"type": "string"},
+                "max_chars": {"type": "integer", "default": 200000},
+            },
+            "required": ["relative_path"],
+        },
+    },
+    {
         "name": "write_text_artifact",
         "description": "Write a UTF-8 text artifact into a run or site namespace on the host machine. Use this instead of Bash/Write for host-side run files.",
         "inputSchema": {
@@ -1212,11 +1567,141 @@ MCP_TOOLS = [
             "type": "object",
             "properties": {
                 "run_id": {"type": "string"},
-                "namespace": {"type": "string", "enum": ["site", "articles", "recommendations", "optimised", "gaps", "competitors", "peec_cache"]},
+                "namespace": {"type": "string", "enum": ["site", "articles", "evidence", "recommendations", "optimised", "gaps", "competitors", "peec_cache"]},
                 "relative_path": {"type": "string"},
-                "data": {"type": "object"},
+                "data": {},
             },
             "required": ["run_id", "namespace", "relative_path", "data"],
+        },
+    },
+    {
+        "name": "record_evidence_pack",
+        "description": "Atomically write evidence/{slug}.json and refresh articles[].stages.evidence from the saved payload.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article_slug": {"type": "string"},
+                "evidence": {"type": "object"},
+            },
+            "required": ["run_id", "article_slug", "evidence"],
+        },
+    },
+    {
+        "name": "record_recommendations",
+        "description": "Atomically write recommendations/{slug}.json, enforce the compact recommendation contract, and refresh articles[].stages.recommendations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article_slug": {"type": "string"},
+                "recommendations": {"type": "object"},
+            },
+            "required": ["run_id", "article_slug", "recommendations"],
+        },
+    },
+    {
+        "name": "record_voice_baseline",
+        "description": "Atomically write the site-scoped brand voice baseline and refresh pipeline.voice plus state.voice.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "markdown": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["run_id", "markdown", "metadata"],
+        },
+    },
+    {
+        "name": "record_peec_gap",
+        "description": "Atomically write gaps/{slug}.json and refresh articles[].stages.analysis with Peec admissibility truth.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article_slug": {"type": "string"},
+                "gap": {"type": "object"},
+            },
+            "required": ["run_id", "article_slug", "gap"],
+        },
+    },
+    {
+        "name": "record_competitor_snapshot",
+        "description": "Atomically write competitors/{slug}.json and refresh articles[].stages.analysis with competitor comparison metadata.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article_slug": {"type": "string"},
+                "snapshot": {"type": "object"},
+            },
+            "required": ["run_id", "article_slug", "snapshot"],
+        },
+    },
+    {
+        "name": "record_draft_package",
+        "description": "Atomically write optimised draft artifacts for one article, run the validator, and refresh articles[].stages.draft from validator truth.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article_slug": {"type": "string"},
+                "package": {"type": "object"},
+            },
+            "required": ["run_id", "article_slug", "package"],
+        },
+    },
+    {
+        "name": "fail_article_stage",
+        "description": "Mark an article stage as failed/blocked with a truthful reason. Use this instead of inventing successful output when prerequisites or evidence do not support drafting.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article_slug": {"type": "string"},
+                "stage": {"type": "string", "enum": ["analysis", "evidence", "recommendations", "draft"]},
+                "reason": {"type": "string"},
+                "detail": {"type": "string"},
+                "code": {"type": "string"},
+            },
+            "required": ["run_id", "article_slug", "stage", "reason"],
+        },
+    },
+    {
+        "name": "finalize_run_report",
+        "description": "Write the final run-summary.md report from disk truth and set the terminal run status accordingly.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+            },
+            "required": ["run_id"],
+        },
+    },
+    {
+        "name": "validate_article",
+        "description": "Deterministically validate one article's reviewer, evidence, HTML, and schema artifacts. Overwrites optimised/{slug}.manifest.json and refreshes draft stage truth in state.json.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article_slug": {"type": "string"},
+                "audit_after": {"type": "integer"},
+            },
+            "required": ["run_id", "article_slug"],
+        },
+    },
+    {
+        "name": "validate_run",
+        "description": "Deterministically validate every generated article in a run, overwriting manifest files and refreshing draft stage truth from validator output.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article_slugs": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["run_id"],
         },
     },
     {
@@ -1237,15 +1722,6 @@ MCP_TOOLS = [
         "name": "list_runs",
         "description": "List all runs in the runs/ directory (newest first) with their state summary.",
         "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_decisions",
-        "description": "Return the current decisions.json for a run (user accept/reject/approve actions).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"run_id": {"type": "string"}},
-            "required": ["run_id"],
-        },
     },
     {
         "name": "show_banner",
@@ -1319,7 +1795,65 @@ def _merge_article_fragments(fragments: list[dict[str, Any]]) -> list[dict[str, 
         else:
             merged[slug] = fragment
             order.append(slug)
-    return [merged[slug] for slug in order]
+    return [_normalize_article_fragment(merged[slug]) for slug in order]
+
+
+def _normalize_article_fragment(article: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(article)
+    draft_fields = {
+        "audit_after",
+        "audit_before",
+        "draft_status",
+        "generated_at",
+        "quality_gate",
+        "status",
+        "validation_error",
+    }
+    stages = normalized.get("stages")
+    has_draft_stage = isinstance(stages, dict) and isinstance(stages.get("draft"), dict)
+    if not has_draft_stage and not any(field in normalized for field in draft_fields):
+        return normalized
+
+    if not isinstance(stages, dict):
+        stages = {}
+    else:
+        stages = dict(stages)
+    draft_stage = stages.get("draft")
+    if not isinstance(draft_stage, dict):
+        draft_stage = {}
+    else:
+        draft_stage = dict(draft_stage)
+    stages["draft"] = draft_stage
+    normalized["stages"] = stages
+
+    for field in ("audit_before", "audit_after", "generated_at"):
+        if normalized.get(field) is not None and field not in draft_stage:
+            draft_stage[field] = normalized[field]
+
+    quality_gate = normalized.get("quality_gate")
+    if isinstance(quality_gate, str) and quality_gate and "quality_gate" not in draft_stage:
+        draft_stage["quality_gate"] = quality_gate.lower()
+
+    validation_error = normalized.get("validation_error")
+    if isinstance(validation_error, str) and validation_error and "blocker_summary" not in draft_stage:
+        draft_stage["blocker_summary"] = validation_error
+
+    legacy_status = normalized.get("draft_status")
+    if not legacy_status and isinstance(normalized.get("status"), str):
+        legacy_status = normalized["status"]
+    mapped_status = LEGACY_DRAFT_STATUS_MAP.get(str(legacy_status or "").lower())
+    if not mapped_status and draft_stage.get("quality_gate") == "passed":
+        mapped_status = "completed"
+    elif not mapped_status and draft_stage.get("quality_gate") == "failed":
+        mapped_status = "failed"
+    elif not mapped_status and draft_stage.get("audit_after") is not None:
+        mapped_status = "completed"
+    elif not mapped_status and validation_error:
+        mapped_status = "failed"
+    if mapped_status and "status" not in draft_stage:
+        draft_stage["status"] = mapped_status
+
+    return normalized
 
 
 def _normalize_state_fragment(fragment: Any) -> Any:
@@ -1362,6 +1896,26 @@ def _normalize_state_fragment(fragment: Any) -> Any:
     return normalized
 
 
+def _load_state(state_path: Path) -> dict[str, Any]:
+    state = _read_json(state_path) or {}
+    if not isinstance(state, dict):
+        state = {}
+    normalized = _normalize_state_fragment(state)
+    if normalized != state:
+        _write_json(state_path, normalized)
+    return normalized
+
+
+def _find_or_create_article(state: dict[str, Any], article_slug: str) -> dict[str, Any]:
+    articles = state.setdefault("articles", [])
+    for article in articles:
+        if isinstance(article, dict) and article.get("slug") == article_slug:
+            return article
+    article = {"slug": article_slug, "stages": {}}
+    articles.append(article)
+    return article
+
+
 def _tool_open_dashboard(args: dict) -> dict:
     run_id = args.get("run_id")
     if not run_id:
@@ -1385,6 +1939,9 @@ def _tool_get_dashboard_url(_args: dict) -> dict:
 
 def _tool_register_run(args: dict) -> dict:
     blog_url = args["blog_url"]
+    peec_project_id = str(args.get("peec_project_id") or "").strip()
+    if not peec_project_id:
+        raise ValueError("peec_project_id is required for register_run")
     canonical_blog_url = _canonicalize_blog_url(blog_url)
     site_key = _site_key_from_blog_url(canonical_blog_url)
     refresh_voice = bool(args.get("refresh_voice", False))
@@ -1398,13 +1955,14 @@ def _tool_register_run(args: dict) -> dict:
     port = start_http_server()
     dashboard_url = f"http://127.0.0.1:{port}/runs/{run_id}/"
     voice_baseline = _read_voice_baseline(site_key, refresh_voice)
-    site_paths = _site_paths(site_key)
+    site_paths = _ensure_site_scaffold(site_key)
     voice_mode = "reused" if voice_baseline["will_reuse"] else "pending"
     run_paths = _build_run_paths(run_dir)
     run_paths.update({
         "site_dir": str(site_paths["site_dir"]),
         "voice_markdown_path": str(site_paths["voice_markdown_path"]),
         "voice_meta_path": str(site_paths["voice_meta_path"]),
+        "reviewers_path": str(site_paths["reviewers_path"]),
     })
     initial_state = {
         "run_id": run_id,
@@ -1416,8 +1974,10 @@ def _tool_register_run(args: dict) -> dict:
         "site_key": site_key,
         "dashboard_url": dashboard_url,
         "peec_project": {
-            "id": args.get("peec_project_id"),
-            "mode": "peec" if args.get("peec_project_id") else "generic",
+            "id": peec_project_id,
+            "mode": "peec-required",
+            "status": "connected",
+            "required": True,
         },
         "session": {"mode": "fresh", "launched_at": _now_iso()},
         "voice_baseline": voice_baseline,
@@ -1442,6 +2002,7 @@ def _tool_register_run(args: dict) -> dict:
                 ),
             },
             "analysis": {"status": "pending"},
+            "evidence": {"status": "pending"},
             "recommendations": {"status": "pending"},
             "draft": {"status": "pending"},
         },
@@ -1457,9 +2018,8 @@ def _tool_register_run(args: dict) -> dict:
         ),
     }
     _write_json(run_dir / "state.json", initial_state)
-    # Seed empty gates.json and decisions.json so agents and dashboard can read them without 404s.
+    # Seed empty gates.json so agents and dashboard can read it without 404s.
     _write_json(run_dir / "gates.json", {})
-    _write_json(run_dir / "decisions.json", {"articles": {}})
     response = {
         "run_id": run_id,
         "dashboard_url": dashboard_url,
@@ -1467,7 +2027,9 @@ def _tool_register_run(args: dict) -> dict:
         "state_path": str(run_dir / "state.json"),
         "site_key": site_key,
         "canonical_blog_url": canonical_blog_url,
+        "peec_project_id": peec_project_id,
         "voice_baseline": voice_baseline,
+        "reviewers_path": str(site_paths["reviewers_path"]),
     }
     response.update(run_paths)
     return response
@@ -1481,12 +2043,114 @@ def _tool_update_state(args: dict) -> dict:
         raise ValueError(f"Run {run_id} does not exist")
     state_path = run_dir / "state.json"
     with STATE_LOCK:
-        state = _read_json(state_path) or {}
+        state = _load_state(state_path)
         _deep_merge(state, fragment)
+        state = _normalize_state_fragment(state)
         _refresh_pipeline_aggregates(state)
         state["updated_at"] = _now_iso()
         _write_json(state_path, state)
     return {"ok": True}
+
+
+def _tool_record_crawl_discovery(args: dict) -> dict:
+    run_id = args["run_id"]
+    discovered_count = max(0, int(args["discovered_count"]))
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    state_path = run_dir / "state.json"
+    with STATE_LOCK:
+        state = _load_state(state_path)
+        crawl = (state.setdefault("pipeline", {})).setdefault("crawl", {})
+        crawl["discovered_count"] = discovered_count
+        crawl.setdefault("status", "running")
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {"ok": True, "run_id": run_id, "discovered_count": discovered_count}
+
+
+def _tool_record_crawled_article(args: dict) -> dict:
+    run_id = args["run_id"]
+    article = _require_object(args["article"], "article")
+    slug = article.get("slug")
+    if not isinstance(slug, str) or not slug:
+        raise ValueError("article.slug is required")
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    article_path = _output_paths(run_dir)["articles_dir"] / f"{slug}.json"
+    state_path = run_dir / "state.json"
+    with STATE_LOCK:
+        _write_json(article_path, article)
+        state = _load_state(state_path)
+        existing = next((item for item in state.get("articles", []) if isinstance(item, dict) and item.get("slug") == slug), None)
+        fragment = {"articles": [_article_state_fragment(article, existing)]}
+        _deep_merge(state, fragment)
+        _refresh_pipeline_aggregates(state)
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "article_slug": slug,
+        "relative_path": f"{slug}.json",
+        "absolute_path": str(article_path),
+    }
+
+
+def _tool_finalize_crawl(args: dict) -> dict:
+    run_id = args["run_id"]
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    state_path = run_dir / "state.json"
+    with STATE_LOCK:
+        state = _load_state(state_path)
+        existing_by_slug = {
+            item.get("slug"): item
+            for item in state.get("articles", [])
+            if isinstance(item, dict) and isinstance(item.get("slug"), str)
+        }
+        records = _persisted_article_records(run_dir)
+        persisted_rows = [_article_state_fragment(record, existing_by_slug.get(record["slug"])) for record in records]
+        persisted_slugs = [row["slug"] for row in persisted_rows]
+        dropped_slugs = [slug for slug in existing_by_slug.keys() if slug not in set(persisted_slugs)]
+        state["articles"] = persisted_rows
+        pipeline = state.setdefault("pipeline", {})
+        crawl = pipeline.setdefault("crawl", {})
+        discovered_count = _crawl_discovered_count(crawl)
+        persisted_count = len(persisted_rows)
+        if discovered_count is not None:
+            crawl["discovered_count"] = discovered_count
+        crawl["article_count"] = persisted_count
+        crawl["persisted_count"] = persisted_count
+        crawl.pop("articles_found", None)
+        state.pop("crawl", None)
+        if persisted_count == 0:
+            crawl["status"] = "failed"
+            crawl["detail"] = (
+                f"Crawler discovered {discovered_count} articles but wrote none to disk."
+                if discovered_count is not None
+                else "Crawler wrote no article JSON files to disk."
+            )
+            state["status"] = "failed"
+        elif discovered_count is not None and persisted_count < discovered_count:
+            crawl["status"] = "partial"
+            crawl["detail"] = f"Crawler discovered {discovered_count} articles but only {persisted_count} JSON files were written to disk."
+        else:
+            crawl["status"] = "completed"
+            crawl["detail"] = f"{persisted_count} article JSON files written to disk."
+        _refresh_pipeline_aggregates(state)
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {
+        "run_id": run_id,
+        "status": crawl["status"],
+        "discovered_count": discovered_count,
+        "persisted_count": persisted_count,
+        "article_slugs": persisted_slugs,
+        "dropped_slugs": dropped_slugs,
+    }
 
 
 def _tool_get_artifact_path(args: dict) -> dict:
@@ -1566,6 +2230,25 @@ def _tool_read_json_artifact(args: dict) -> dict:
     }
 
 
+def _tool_read_bundle_text(args: dict) -> dict:
+    relative_path = args["relative_path"]
+    max_chars = max(1, min(int(args.get("max_chars", 200000)), 2_000_000))
+    target = _resolve_bundle_path(relative_path)
+    if not target.exists() or not target.is_file():
+        raise ValueError(f"Bundled file not found: {relative_path}")
+    content = target.read_text(encoding="utf-8")
+    truncated = len(content) > max_chars
+    if truncated:
+        content = content[:max_chars]
+    return {
+        "relative_path": relative_path,
+        "absolute_path": str(target),
+        "content": content,
+        "truncated": truncated,
+        "plugin_root": str(PLUGIN_ROOT),
+    }
+
+
 def _tool_write_text_artifact(args: dict) -> dict:
     run_id = args["run_id"]
     namespace = args["namespace"]
@@ -1601,6 +2284,443 @@ def _tool_write_json_artifact(args: dict) -> dict:
     }
 
 
+def _tool_record_evidence_pack(args: dict) -> dict:
+    run_id = args["run_id"]
+    article_slug = args["article_slug"]
+    evidence = _require_object(args["evidence"], "evidence")
+    payload_slug = evidence.get("article_slug")
+    if payload_slug is None:
+        evidence["article_slug"] = article_slug
+    elif payload_slug != article_slug:
+        raise ValueError("evidence.article_slug must match article_slug")
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    evidence_path = _output_paths(run_dir)["evidence_dir"] / f"{article_slug}.json"
+    sources = evidence.get("sources")
+    source_count = len([item for item in sources if isinstance(item, dict)]) if isinstance(sources, list) else 0
+    reviewer_candidate_id = evidence.get("reviewer_candidate_id")
+    state_path = run_dir / "state.json"
+    with STATE_LOCK:
+        _write_json(evidence_path, evidence)
+        state = _load_state(state_path)
+        _deep_merge(state, {
+            "articles": [
+                {
+                    "slug": article_slug,
+                    "stages": {
+                        "evidence": {
+                            "status": "completed",
+                            "source_count": source_count,
+                            "reviewer_candidate_id": reviewer_candidate_id,
+                        }
+                    },
+                }
+            ]
+        })
+        _refresh_pipeline_aggregates(state)
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "article_slug": article_slug,
+        "source_count": source_count,
+        "relative_path": f"{article_slug}.json",
+        "absolute_path": str(evidence_path),
+    }
+
+
+def _tool_record_recommendations(args: dict) -> dict:
+    run_id = args["run_id"]
+    article_slug = args["article_slug"]
+    recommendations = _require_object(args["recommendations"], "recommendations")
+    payload_slug = recommendations.get("article_slug")
+    if payload_slug is None:
+        recommendations["article_slug"] = article_slug
+    elif payload_slug != article_slug:
+        raise ValueError("recommendations.article_slug must match article_slug")
+    items = recommendations.get("recommendations")
+    if not isinstance(items, list):
+        raise ValueError("recommendations.recommendations must be an array")
+    if len(items) != 4:
+        raise ValueError("recommendations.recommendations must contain exactly 4 items")
+    matched_prompts = recommendations.get("matched_prompts")
+    if isinstance(matched_prompts, list) and len(matched_prompts) > 2:
+        raise ValueError("recommendations.matched_prompts must contain at most 2 items")
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    rec_path = _output_paths(run_dir)["recommendations_dir"] / f"{article_slug}.json"
+    audit = recommendations.get("audit") if isinstance(recommendations.get("audit"), dict) else {}
+    critical_count = recommendations.get("critical_count")
+    if not isinstance(critical_count, int):
+        critical_count = len([item for item in items if isinstance(item, dict) and (item.get("required") or item.get("critical") or item.get("severity") == "critical")])
+    state_path = run_dir / "state.json"
+    with STATE_LOCK:
+        _write_json(rec_path, recommendations)
+        state = _load_state(state_path)
+        _deep_merge(state, {
+            "articles": [
+                {
+                    "slug": article_slug,
+                    "stages": {
+                        "recommendations": {
+                            "status": "completed",
+                            "score_before": audit.get("score_before"),
+                            "score_target": audit.get("score_target"),
+                            "score_max": audit.get("score_max"),
+                            "recommendation_count": len(items),
+                            "critical_count": critical_count,
+                            "mode": recommendations.get("mode"),
+                        }
+                    },
+                }
+            ]
+        })
+        _refresh_pipeline_aggregates(state)
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "article_slug": article_slug,
+        "recommendation_count": len(items),
+        "critical_count": critical_count,
+        "relative_path": f"{article_slug}.json",
+        "absolute_path": str(rec_path),
+    }
+
+
+def _persist_manifest_and_update_draft_state(run_dir: Path, article_slug: str, manifest: dict[str, Any]) -> Path:
+    manifest_path = _output_paths(run_dir)["optimised_dir"] / f"{article_slug}.manifest.json"
+    _write_json(manifest_path, manifest)
+    state_path = run_dir / "state.json"
+    state = _load_state(state_path)
+    article = _find_or_create_article(state, article_slug)
+    draft_stage = (article.setdefault("stages", {})).setdefault("draft", {})
+    draft_stage["status"] = "completed" if manifest["quality_gate"]["status"] == "passed" else "failed"
+    if manifest.get("audit_before") is not None:
+        draft_stage["audit_before"] = manifest["audit_before"]
+    if manifest.get("audit_after") is not None:
+        draft_stage["audit_after"] = manifest["audit_after"]
+    draft_stage["quality_gate"] = manifest["quality_gate"]["status"]
+    if manifest["quality_gate"]["blocking_issues"]:
+        draft_stage["blocker_summary"] = manifest["quality_gate"]["blocking_issues"][0]
+    else:
+        draft_stage.pop("blocker_summary", None)
+    _refresh_pipeline_aggregates(state)
+    state["updated_at"] = _now_iso()
+    _write_json(state_path, state)
+    return manifest_path
+
+
+def _tool_record_voice_baseline(args: dict) -> dict:
+    run_id = args["run_id"]
+    markdown = str(args["markdown"])
+    metadata = _require_object(args["metadata"], "metadata")
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    state_path = run_dir / "state.json"
+    state = _load_state(state_path)
+    site_key = str(state.get("site_key") or "")
+    if not site_key:
+        raise ValueError(f"Run {run_id} is missing site_key")
+    site_paths = _ensure_site_scaffold(site_key)
+    stored_metadata = dict(metadata)
+    stored_metadata.setdefault("site_key", site_key)
+    stored_metadata.setdefault("canonical_blog_url", state.get("canonical_blog_url"))
+    stored_metadata.setdefault("source_run_id", run_id)
+    stored_metadata.setdefault("updated_at", _now_iso())
+    stored_metadata.setdefault("version", 1)
+    with STATE_LOCK:
+        _atomic_write(site_paths["voice_markdown_path"], markdown)
+        _write_json(site_paths["voice_meta_path"], stored_metadata)
+        state = _load_state(state_path)
+        summary = stored_metadata.get("summary")
+        state["voice"] = {
+            "mode": "generated",
+            "source_run_id": stored_metadata.get("source_run_id"),
+            "updated_at": stored_metadata.get("updated_at"),
+            "summary": summary,
+            "markdown_path": str(site_paths["voice_markdown_path"]),
+            "meta_path": str(site_paths["voice_meta_path"]),
+        }
+        pipeline = state.setdefault("pipeline", {})
+        pipeline["voice"] = {
+            "status": "completed",
+            "detail": str(summary or "Voice baseline recorded."),
+        }
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "site_key": site_key,
+        "markdown_path": str(site_paths["voice_markdown_path"]),
+        "meta_path": str(site_paths["voice_meta_path"]),
+        "updated_at": stored_metadata["updated_at"],
+    }
+
+
+def _tool_record_peec_gap(args: dict) -> dict:
+    run_id = args["run_id"]
+    article_slug = args["article_slug"]
+    gap = _require_object(args["gap"], "gap")
+    payload_slug = gap.get("article_slug")
+    if payload_slug is None:
+        gap["article_slug"] = article_slug
+    elif payload_slug != article_slug:
+        raise ValueError("gap.article_slug must match article_slug")
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    gap_path = _output_paths(run_dir)["gaps_dir"] / f"{article_slug}.json"
+    matched_prompts = gap.get("matched_prompts")
+    matched_prompt_count = len([item for item in matched_prompts if isinstance(item, dict)]) if isinstance(matched_prompts, list) else 0
+    admissible = bool(gap.get("admissible", matched_prompt_count > 0))
+    state_path = run_dir / "state.json"
+    with STATE_LOCK:
+        _write_json(gap_path, gap)
+        state = _load_state(state_path)
+        analysis_stage = {
+            "status": "completed" if admissible else "failed",
+            "matched_prompt_count": matched_prompt_count,
+            "admissible": admissible,
+        }
+        if isinstance(gap.get("freshness"), str):
+            analysis_stage["freshness"] = gap["freshness"]
+        if isinstance(gap.get("blocker_reason"), str) and gap["blocker_reason"]:
+            analysis_stage["blocker_summary"] = gap["blocker_reason"]
+        _deep_merge(state, {
+            "articles": [
+                {
+                    "slug": article_slug,
+                    "stages": {
+                        "analysis": analysis_stage,
+                    },
+                }
+            ]
+        })
+        _refresh_pipeline_aggregates(state)
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "article_slug": article_slug,
+        "matched_prompt_count": matched_prompt_count,
+        "admissible": admissible,
+        "relative_path": f"{article_slug}.json",
+        "absolute_path": str(gap_path),
+    }
+
+
+def _tool_record_competitor_snapshot(args: dict) -> dict:
+    run_id = args["run_id"]
+    article_slug = args["article_slug"]
+    snapshot = _require_object(args["snapshot"], "snapshot")
+    payload_slug = snapshot.get("article_slug")
+    if payload_slug is None:
+        snapshot["article_slug"] = article_slug
+    elif payload_slug != article_slug:
+        raise ValueError("snapshot.article_slug must match article_slug")
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    snapshot_path = _output_paths(run_dir)["competitors_dir"] / f"{article_slug}.json"
+    competitors = snapshot.get("competitors")
+    competitor_count = len([item for item in competitors if isinstance(item, dict)]) if isinstance(competitors, list) else 0
+    state_path = run_dir / "state.json"
+    with STATE_LOCK:
+        _write_json(snapshot_path, snapshot)
+        state = _load_state(state_path)
+        article = _find_or_create_article(state, article_slug)
+        stages = article.setdefault("stages", {})
+        analysis_stage = stages.setdefault("analysis", {})
+        analysis_stage["status"] = "completed"
+        analysis_stage["competitor_count"] = competitor_count
+        _refresh_pipeline_aggregates(state)
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "article_slug": article_slug,
+        "competitor_count": competitor_count,
+        "relative_path": f"{article_slug}.json",
+        "absolute_path": str(snapshot_path),
+    }
+
+
+def _tool_record_draft_package(args: dict) -> dict:
+    run_id = args["run_id"]
+    article_slug = args["article_slug"]
+    package = _require_object(args["package"], "package")
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    output_paths = _output_paths(run_dir)
+    markdown = package.get("markdown")
+    html_text = package.get("html")
+    schema = package.get("schema")
+    diff_markdown = package.get("diff_markdown")
+    handoff_markdown = package.get("handoff_markdown")
+    audit_after = _safe_int(package.get("audit_after"))
+    if not isinstance(markdown, str) or not markdown.strip():
+        raise ValueError("package.markdown is required")
+    if not isinstance(html_text, str) or not html_text.strip():
+        raise ValueError("package.html is required")
+    if not isinstance(schema, dict):
+        raise ValueError("package.schema must be a JSON object")
+    if not isinstance(diff_markdown, str) or not diff_markdown.strip():
+        raise ValueError("package.diff_markdown is required")
+    if not isinstance(handoff_markdown, str) or not handoff_markdown.strip():
+        raise ValueError("package.handoff_markdown is required")
+
+    with STATE_LOCK:
+        _atomic_write(output_paths["optimised_dir"] / f"{article_slug}.md", markdown)
+        _atomic_write(output_paths["optimised_dir"] / f"{article_slug}.html", html_text)
+        _write_json(output_paths["optimised_dir"] / f"{article_slug}.schema.json", schema)
+        _atomic_write(output_paths["optimised_dir"] / f"{article_slug}.diff.md", diff_markdown)
+        _atomic_write(output_paths["optimised_dir"] / f"{article_slug}.handoff.md", handoff_markdown)
+        state_path = run_dir / "state.json"
+        state = _load_state(state_path)
+        article = _find_or_create_article(state, article_slug)
+        draft_stage = (article.setdefault("stages", {})).setdefault("draft", {})
+        draft_stage["status"] = "running"
+        if audit_after is not None:
+            draft_stage["audit_after"] = audit_after
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+
+    with STATE_LOCK:
+        manifest = build_article_manifest(run_dir, article_slug, audit_after=audit_after)
+        manifest_path = _persist_manifest_and_update_draft_state(run_dir, article_slug, manifest)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "article_slug": article_slug,
+        "manifest": manifest,
+        "manifest_path": str(manifest_path),
+        "quality_gate_status": manifest["quality_gate"]["status"],
+    }
+
+
+def _tool_fail_article_stage(args: dict) -> dict:
+    run_id = args["run_id"]
+    article_slug = args["article_slug"]
+    stage = args["stage"]
+    reason = str(args["reason"]).strip()
+    detail = str(args.get("detail") or "").strip()
+    code = str(args.get("code") or "").strip() or None
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    state_path = run_dir / "state.json"
+    with STATE_LOCK:
+        state = _load_state(state_path)
+        article = _find_or_create_article(state, article_slug)
+        stage_state = (article.setdefault("stages", {})).setdefault(stage, {})
+        stage_state["status"] = "failed"
+        stage_state["blocker_summary"] = reason
+        if detail:
+            stage_state["detail"] = detail
+        if code:
+            stage_state["code"] = code
+        if stage == "draft":
+            stage_state["quality_gate"] = "failed"
+        _refresh_pipeline_aggregates(state)
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "article_slug": article_slug,
+        "stage": stage,
+        "reason": reason,
+    }
+
+
+def _tool_finalize_run_report(args: dict) -> dict:
+    run_id = args["run_id"]
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    state_path = run_dir / "state.json"
+    with STATE_LOCK:
+        state = _load_state(state_path)
+        report_markdown = _render_run_report(state, run_dir)
+        report_path = run_dir / "run-summary.md"
+        _atomic_write(report_path, report_markdown)
+        state["status"] = _run_terminal_status(state)
+        state["report"] = {
+            "generated_at": _now_iso(),
+            "path": str(report_path),
+        }
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "status": state["status"],
+        "report_path": str(report_path),
+    }
+
+
+def _tool_validate_article(args: dict) -> dict:
+    run_id = args["run_id"]
+    article_slug = args["article_slug"]
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    with STATE_LOCK:
+        manifest = build_article_manifest(run_dir, article_slug, audit_after=args.get("audit_after"))
+        _persist_manifest_and_update_draft_state(run_dir, article_slug, manifest)
+    return manifest
+
+
+def _tool_validate_run(args: dict) -> dict:
+    run_id = args["run_id"]
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    state = _load_state(run_dir / "state.json")
+    output_paths = _output_paths(run_dir)
+    requested = args.get("article_slugs")
+    if isinstance(requested, list) and requested:
+        article_slugs = [str(item) for item in requested if str(item)]
+    else:
+        article_slugs = [
+            str(article.get("slug"))
+            for article in state.get("articles", [])
+            if isinstance(article, dict) and article.get("slug")
+            and (output_paths["optimised_dir"] / f"{article.get('slug')}.html").exists()
+            and (output_paths["optimised_dir"] / f"{article.get('slug')}.schema.json").exists()
+        ]
+    results: list[dict[str, Any]] = []
+    passed = 0
+    failed = 0
+    for article_slug in article_slugs:
+        manifest = _tool_validate_article({"run_id": run_id, "article_slug": article_slug})
+        results.append({
+            "article_slug": article_slug,
+            "status": manifest["quality_gate"]["status"],
+            "missing_required_modules": manifest["missing_required_modules"],
+        })
+        if manifest["quality_gate"]["status"] == "passed":
+            passed += 1
+        else:
+            failed += 1
+    return {
+        "run_id": run_id,
+        "results": results,
+        "passed": passed,
+        "failed": failed,
+    }
+
+
 def _tool_download_media_asset(args: dict) -> dict:
     run_id = args["run_id"]
     source_url = args["source_url"]
@@ -1608,7 +2728,7 @@ def _tool_download_media_asset(args: dict) -> dict:
     timeout_seconds = max(1, min(int(args.get("timeout_seconds", 15)), 60))
     _, target = _resolve_artifact_path(run_id, "media", relative_path)
     request = urllib.request.Request(source_url, headers={
-        "User-Agent": "Mozilla/5.0 (compatible; AI Search Blog Optimiser/0.3.2)"
+        "User-Agent": f"Mozilla/5.0 (compatible; AI Search Blog Optimiser/{VERSION})"
     })
     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
         payload = response.read()
@@ -1628,13 +2748,6 @@ def _tool_list_runs(_args: dict) -> dict:
     return {"runs": _list_runs()}
 
 
-def _tool_get_decisions(args: dict) -> dict:
-    run_id = args["run_id"]
-    run_dir = RUNS_DIR / run_id
-    decisions = _read_json(run_dir / "decisions.json") or {"articles": {}}
-    return decisions
-
-
 def _tool_show_banner(args: dict) -> dict:
     run_id = args["run_id"]
     run_dir = RUNS_DIR / run_id
@@ -1642,7 +2755,7 @@ def _tool_show_banner(args: dict) -> dict:
         raise ValueError(f"Run {run_id} does not exist")
     state_path = run_dir / "state.json"
     with STATE_LOCK:
-        state = _read_json(state_path) or {}
+        state = _load_state(state_path)
         banners = state.setdefault("banners", [])
         banners.append({
             "severity": args["severity"],
@@ -1698,15 +2811,28 @@ TOOL_DISPATCH = {
     "get_dashboard_url": _tool_get_dashboard_url,
     "register_run": _tool_register_run,
     "update_state": _tool_update_state,
+    "record_crawl_discovery": _tool_record_crawl_discovery,
+    "record_crawled_article": _tool_record_crawled_article,
+    "finalize_crawl": _tool_finalize_crawl,
     "get_artifact_path": _tool_get_artifact_path,
     "list_artifacts": _tool_list_artifacts,
     "read_text_artifact": _tool_read_text_artifact,
     "read_json_artifact": _tool_read_json_artifact,
+    "read_bundle_text": _tool_read_bundle_text,
     "write_text_artifact": _tool_write_text_artifact,
     "write_json_artifact": _tool_write_json_artifact,
+    "record_evidence_pack": _tool_record_evidence_pack,
+    "record_recommendations": _tool_record_recommendations,
+    "record_voice_baseline": _tool_record_voice_baseline,
+    "record_peec_gap": _tool_record_peec_gap,
+    "record_competitor_snapshot": _tool_record_competitor_snapshot,
+    "record_draft_package": _tool_record_draft_package,
+    "fail_article_stage": _tool_fail_article_stage,
+    "finalize_run_report": _tool_finalize_run_report,
+    "validate_article": _tool_validate_article,
+    "validate_run": _tool_validate_run,
     "download_media_asset": _tool_download_media_asset,
     "list_runs": _tool_list_runs,
-    "get_decisions": _tool_get_decisions,
     "show_banner": _tool_show_banner,
     "set_gate": _tool_set_gate,
     "get_gates": _tool_get_gates,

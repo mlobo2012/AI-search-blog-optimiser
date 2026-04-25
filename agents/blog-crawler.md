@@ -27,7 +27,7 @@ The absolute paths above are host-machine paths returned by `register_run`. In C
 - Never use `mcp__c4ai-sse__ask` for article extraction either.
 - Never use `mcp__c4ai-sse__execute_js` for metadata extraction.
 - Never infer a slug from a title. Only use article URLs that appear verbatim in index links or canonical tags.
-- Persist host-side artefacts only through `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__get_artifact_path`, `list_artifacts`, `write_text_artifact`, `write_json_artifact`, and `download_media_asset`.
+- Persist host-side artefacts only through `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__get_artifact_path`, `write_text_artifact`, `record_crawl_discovery`, `record_crawled_article`, `finalize_crawl`, and `download_media_asset`.
 
 ## MCP access you should use
 
@@ -36,8 +36,10 @@ The absolute paths above are host-machine paths returned by `register_run`. In C
 - `mcp__c4ai-sse__screenshot`
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__get_artifact_path`
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__list_artifacts`
+- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_crawl_discovery`
+- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_crawled_article`
+- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__finalize_crawl`
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__write_text_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__write_json_artifact`
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__download_media_asset`
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__update_state`
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__show_banner`
@@ -54,6 +56,7 @@ Use `Bash` only for small in-sandbox parsing or formatting work. Never use it fo
 4. Exclude category, tag, author, pagination, and feed URLs.
 5. If raw markdown is thin or missing links, fetch `mcp__c4ai-sse__html` and extract actual hrefs from that HTML instead.
 6. Deduplicate, keep index order as the default recency heuristic, and cap at `max_articles`.
+7. Immediately call `record_crawl_discovery(run_id, discovered_count=<N>)`.
 
 If you find zero article URLs, call `show_banner` with severity `error`, mark crawl as failed in `update_state`, and return immediately.
 
@@ -138,6 +141,9 @@ The record shape is:
     "credentials_mentioned": [],
     "entities_mentioned": []
   },
+  "summary": {
+    "intro_paragraph": ""
+  },
   "links": {
     "internal": [],
     "external": [],
@@ -153,29 +159,12 @@ The record shape is:
 }
 ```
 
-### Step 5 — Persist the article JSON and state
+### Step 5 — Persist the article JSON atomically
 
-1. Write the final article record to `articles/{slug}.json` via `write_json_artifact`.
-2. Call `update_state` with an article fragment like:
-
-```json
-{
-  "articles": [
-    {
-      "slug": "slug",
-      "url": "https://example.com/blog/post",
-      "title": "Title",
-      "thumbnail": "media/slug/thumb.png",
-      "stages": {
-        "crawl": {
-          "status": "completed",
-          "word_count": 1200
-        }
-      }
-    }
-  ]
-}
-```
+1. Call `record_crawled_article` with the full article record.
+   - Derive `summary.intro_paragraph` from the first meaningful non-heading paragraph in `body_md`.
+   - Skip obvious boilerplate and CTA copy.
+2. Do not call `update_state` for successful crawl articles. `record_crawled_article` writes both the artifact and the matching crawl-stage state in one step.
 
 ### Step 6 — Cross-link inbound internal links
 
@@ -184,7 +173,8 @@ After all article JSON files are written:
 1. `list_artifacts(namespace="articles", suffix=".json")`
 2. `read_json_artifact` for each article
 3. Populate `links.inbound_internal`
-4. Rewrite each updated article with `write_json_artifact`
+4. Rewrite each updated article with `record_crawled_article`
+5. Call `finalize_crawl(run_id)` so state is reconciled against the real `articles/*.json` files on disk.
 
 ## Output
 
@@ -197,3 +187,4 @@ Return at most 200 tokens:
 - If the index page exposes a canonical URL that differs from a guessed slug, trust the canonical URL.
 - If the site blocks one fetch mode but another works, continue with the working mode and note it in the article state.
 - If zero article JSON files exist in the real `articles` namespace at the end, return an explicit failure summary. Do not claim success.
+- Never create crawl-stage rows in `state.json` without a matching `articles/{slug}.json` artifact on disk.

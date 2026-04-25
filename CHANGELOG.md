@@ -2,6 +2,63 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.5.6] — 2026-04-23
+
+Crawl-state hardening release after live runs reported discovered articles that never persisted as host artifacts.
+
+### Fixed
+- Replaced the crawler's split write path with typed dashboard tools so crawl discovery, per-article article JSON writes, and crawl finalization are persisted through one host-owned contract.
+- Added `finalize_crawl` reconciliation so the run state is pruned back to the real `outputs/articles/*.json` set instead of letting ghost crawl rows leak into evidence, recommendation, and draft stages.
+- Added typed evidence and recommendation writers so downstream stage state is updated atomically with the artifact write instead of relying on prompt-authored `update_state` payloads.
+- Added regression coverage for crawl reconciliation, typed evidence writes, typed recommendation writes, and recommendation-count enforcement.
+
+## [0.5.5] — 2026-04-23
+
+Cowork gate and artifact-hardening fix after a live recommendation-to-draft failure.
+
+### Fixed
+- Gates now treat Claude Cowork chat as the primary control surface. The dashboard is review-only and the runtime prompts now tell the user to reply `continue` in Cowork instead of relying on a dashboard button.
+- Hardened JSON artifact reads and writes so accidental stringified payloads are normalized instead of breaking recommendation rendering or validator calls.
+- Added legacy state repair so older draft status shapes are mapped back into `articles[].stages.draft`, keeping the dashboard table and validator aligned.
+- Added regressions for stringified JSON artifacts, repaired draft-state reads, and Cowork-first gate wording.
+
+## [0.5.4] — 2026-04-23
+
+Cowork compatibility fix for user-installed Peec MCP connections.
+
+### Fixed
+- Stopped assuming the external Peec MCP server prefix is literally `mcp__peec__...`.
+- Updated the slash command, main pipeline playbook, and Peec gap-reader contract to discover Peec tools by capability via `ToolSearch`, so UUID-named Cowork MCP servers are treated as valid Peec connections.
+- Documented the capability-based Peec discovery rule in the runtime docs to keep future prompt changes from regressing to server-name assumptions.
+
+## [0.5.3] — 2026-04-23
+
+Installed Cowork runtime fix focused on getting the recommendation stage to complete reliably under
+real desktop runs.
+
+### Fixed
+- Tightened the recommender contract so it uses only the top Peec prompt slices instead of copying large gap payloads into the rewrite artifact.
+- Shrunk the recommendation JSON shape to the minimum generator and validator inputs needed for draft generation, reducing long stalled tool-call emissions in the installed plugin runtime.
+- Added prompt guardrails that force terse recommendation rows, shorter blueprint fields, and compact evidence references instead of long copied excerpts.
+
+## [0.5.2] — 2026-04-23
+
+Installed Cowork runtime hardening focused on keeping Peec gap reads robust under live plugin runs.
+
+### Fixed
+- Locked the Peec gap-read recipe to `get_actions(scope=overview)` so installed Cowork runs no longer depend on follow-up action branches that were intermittently returning live `422` errors.
+- Tightened the prompt regression suite to keep the gap-read contract on the overview-only path.
+
+## [0.5.1] — 2026-04-23
+
+Installed Cowork runtime fix focused on keeping workers inside the supported host-vs-bundle file model.
+
+### Fixed
+- `register_run` now scaffolds `sites/{site_key}/reviewers.json` as an empty array so fresh installs do not fail on a missing optional reviewer file.
+- Added a bundled reference reader to the dashboard MCP so workers can load `references/*.md` and `skills/*/SKILL.md` from the installed plugin without abusing run artifact namespaces.
+- Updated gap-reader, recommender, and generator prompts to use the bundled reader for plugin-static references instead of attempting unsafe host-path traversal.
+- Tightened reviewer-file guidance in evidence, recommendation, and draft stages so workers treat site reviewers as a site-scoped JSON array that may be empty, not as an optional file they need to probe ad hoc.
+
 ## [0.3.2] — 2026-04-22
 
 Dashboard review release focused on making the inline article workflow actually usable.

@@ -1,10 +1,10 @@
 ---
 name: blog-optimiser-pipeline
 description: Canonical orchestration playbook for the AI Search Blog Optimiser pipeline. Runs in the main session, uses disk-first state, and only opens the dashboard after a fresh run has been registered.
-version: 0.3.2
+version: 0.6.0
 ---
 
-# Blog Optimiser Pipeline (v0.3.2)
+# Blog Optimiser Pipeline (v0.6.0)
 
 This playbook is executed by the main session when `/blog-optimiser` runs. The main session is the orchestrator. Sub-agents are leaf workers only.
 
@@ -18,6 +18,7 @@ This playbook is executed by the main session when `/blog-optimiser` runs. The m
 - Keep prereq outputs small and structured.
 - Leaf workers must use the dashboard MCP artifact tools for host-side reads and writes.
 - The absolute paths returned by `register_run` are for host-side MCP `output_path` arguments only. Do not use them with sandboxed `Bash`, `Read`, or `Write`.
+- Never assume the Peec MCP server prefix is literally `peec`. In Cowork, external MCP servers can appear under UUID-based prefixes.
 
 ## Pipeline stages
 
@@ -25,8 +26,9 @@ This playbook is executed by the main session when `/blog-optimiser` runs. The m
 2. `crawl`
 3. `voice`
 4. `analysis`
-5. `recommendations`
-6. `draft`
+5. `evidence`
+6. `recommendations`
+7. `draft`
 
 The run's `state.json` is the source of truth. Update it on disk after every stage transition.
 
@@ -36,7 +38,13 @@ The run's `state.json` is the source of truth. Update it on disk after every sta
 
 Run prerequisites before creating or opening anything:
 
-1. Probe Peec with `mcp__peec__list_projects`.
+1. Use `ToolSearch` to discover whether a connected Peec MCP is available.
+   - Look for tools that expose the Peec capability set: `list_projects`, `list_prompts`,
+     `list_chats`, `get_chat`, `get_actions`, `get_brand_report`, and `get_domain_report`.
+   - Do not assume the tool prefix is `mcp__peec__`. A valid connected Peec MCP may look like
+     `mcp__57fe1a18-bd7d-47fc-846e-bb20a3bdb291__list_projects`.
+   - If such a tool family exists, load it and use its `list_projects` tool to match the project.
+   - If no Peec tool family exists, stop immediately. Peec is required for this product.
 2. Probe Crawl4AI with:
 
 ```json
@@ -48,6 +56,8 @@ Run prerequisites before creating or opening anything:
 using `mcp__c4ai-sse__md`.
 
 Treat success as a small, non-empty response. If Crawl4AI fails, stop immediately. Do not open the dashboard.
+Do not emit "No Peec connection" unless you first attempted capability-based discovery via `ToolSearch`.
+If no Peec project matches the blog or brand, stop immediately instead of running a GEO-only fallback.
 
 ### Stage 1 — Register the run
 
@@ -56,7 +66,7 @@ Call `mcp__blog-optimiser-dashboard__register_run` with:
 ```json
 {
   "blog_url": "<blog-url>",
-  "peec_project_id": "<matched-project-or-null>",
+  "peec_project_id": "<matched-project-id>",
   "refresh_voice": true|false
 }
 ```
@@ -69,6 +79,7 @@ Use the returned fields as authoritative:
 - `state_path`
 - `outputs_dir`
 - `articles_dir`
+- `evidence_dir`
 - `recommendations_dir`
 - `optimised_dir`
 - `media_dir`
@@ -76,13 +87,12 @@ Use the returned fields as authoritative:
 - `gaps_dir`
 - `competitors_dir`
 - `peec_cache_dir`
-- `decisions_path`
-- `gates_path`
 - `run_summary_path`
 - `site_key`
 - `voice_baseline`
 - `voice_markdown_path`
 - `voice_meta_path`
+- `reviewers_path`
 
 Immediately after registration, call:
 
@@ -113,38 +123,27 @@ Never use Bash/Read/Write on /Users/... paths.
 Discover article URLs only from actual hrefs or canonical URLs exposed by the index/article fetches.
 Never infer slugs from titles.
 Use this fetch order for article pages: md raw -> html.
+Call `record_crawl_discovery` after URL discovery.
+Call `record_crawled_article` for every persisted article.
+Call `finalize_crawl` before returning.
 ```
 
 After the crawler returns, immediately verify the real host-side outputs:
 
-1. Call `mcp__blog-optimiser-dashboard__list_artifacts` with `namespace="articles"` and `suffix=".json"`.
-2. If zero article JSON files exist:
+1. Call `mcp__blog-optimiser-dashboard__finalize_crawl` with `run_id`.
+2. If `persisted_count == 0`:
    - call `show_banner` with severity `error`
    - set `pipeline.crawl.status = "failed"`
    - set `status = "failed"`
    - stop the pipeline
-3. If one or more article JSON files exist:
-   - set `pipeline.crawl.status = "completed"`
+3. If `status == "partial"`:
+   - call `show_banner` with severity `warn`
+   - message: `Crawler discovered {discovered_count} articles but only {persisted_count} JSON files were written to disk. Continuing with the persisted set only.`
+4. If `persisted_count > 0`:
+   - trust the returned `article_slugs` as the canonical crawl set for downstream stages
    - checkpoint `state.json`
 
 Do not continue to voice, recommendations, or draft on an empty crawl.
-
-Unless `--no-gates` is set, stop here for review before Stage 3:
-
-1. Call `set_gate` with:
-
-```json
-{
-  "run_id": "<run_id>",
-  "gate": "crawl_gate",
-  "status": "pending",
-  "prompt": "Review the crawl output before voice extraction and Peec analysis.",
-  "timeout_seconds": 300
-}
-```
-
-2. Poll `get_gates` every 10 seconds.
-3. Do not continue until `crawl_gate.status == "resolved"`.
 
 ### Stage 3 — Voice
 
@@ -176,23 +175,6 @@ Never use Bash/Read/Write on /Users/... paths.
 - on success set `voice.mode = "generated"`
 - update `voice.summary`, `voice.updated_at`, and `voice.source_run_id`
 
-Unless `--no-gates` is set, stop here for review before Stage 4:
-
-1. Call `set_gate` with:
-
-```json
-{
-  "run_id": "<run_id>",
-  "gate": "voice_gate",
-  "status": "pending",
-  "prompt": "Review the extracted voice baseline before recommendations are generated.",
-  "timeout_seconds": 300
-}
-```
-
-2. Poll `get_gates` every 10 seconds.
-3. Do not continue until `voice_gate.status == "resolved"`.
-
 ### Stage 4 — Analysis
 
 Before recommendation batches begin, mark:
@@ -209,7 +191,7 @@ Before recommendation batches begin, mark:
 
 This stage represents gap analysis and competitor evidence collection performed by the recommender flow.
 
-If `peec_project_id` is present, dispatch `peec-gap-reader` once per article before recommendations with:
+Dispatch `peec-gap-reader` once per article before recommendations with:
 
 ```text
 run_id: <run_id>
@@ -219,17 +201,65 @@ peec_project_id: <peec_project_id>
 
 Do this in batches of 3 in a single assistant message.
 
-If a gap read succeeds, it should write `gaps/{article_slug}.json`.
+If a gap read succeeds, it should write its artifact through `record_peec_gap`.
 
-If a gap read fails or the project has no usable prompt/topic data:
+If a gap read fails or the project has no usable prompt data:
 
-- keep the run moving
-- show a warning banner only if every article failed gap-read
-- let the recommender fall back to `voice-rubric` mode
+- call `fail_article_stage(stage="analysis", ...)` for that article
+- keep the rest of the run moving only for articles that still have admissible Peec evidence
+- do not let the recommender silently fall back to `voice-rubric` mode
 
 When the first successful recommendation artefact is written, mark `pipeline.analysis.status = "completed"`.
 
-### Stage 5 — Recommendations
+### Stage 5 — Evidence
+
+Before evidence-builder batches begin, mark:
+
+```json
+{
+  "pipeline": {
+    "evidence": {
+      "status": "running"
+    }
+  }
+}
+```
+
+Dispatch `evidence-builder` workers in batches of 3 in a single assistant message.
+
+Each evidence-builder receives:
+
+- `run_id`
+- `article_slug`
+- `site_key`
+- `peec_project_id`
+- `reviewers_path`
+- absolute output paths from `register_run`
+
+Prompt contract additions:
+
+```text
+Use dashboard MCP artifact tools for all host-side reads and writes.
+Read article JSON from articles/{article_slug}.json.
+Read gap JSON from gaps/{article_slug}.json if it exists.
+Read site reviewers from site/reviewers.json. It is always present as a JSON array and may be empty.
+Write evidence via `record_evidence_pack`, not `write_json_artifact`.
+Never use Bash/Read/Write on /Users/... paths.
+Do not invent reviewers, claims, or sources.
+```
+
+Evidence-builder sub-agents update per-article `stages.evidence` only. The main session owns top-level `pipeline.evidence` aggregate state.
+
+After all evidence-builder sub-agents return:
+
+1. Call `list_artifacts` with `namespace="evidence"` and `suffix=".json"`.
+2. If zero evidence artefacts exist:
+   - call `show_banner` with severity `error`
+   - set `pipeline.evidence.status = "failed"`
+   - set `status = "failed"`
+   - stop the pipeline
+
+### Stage 6 — Recommendations
 
 Dispatch recommenders in batches of 3 in a single assistant message.
 
@@ -240,6 +270,7 @@ Each recommender receives:
 - `peec_project_id`
 - `site_key`
 - `mode`
+- `reviewers_path`
 - `voice_markdown_path`
 - `voice_meta_path`
 - absolute output paths from `register_run`
@@ -249,12 +280,16 @@ Prompt contract additions:
 ```text
 Use dashboard MCP artifact tools for all host-side reads and writes.
 Read article JSON from articles/{article_slug}.json.
+Read evidence JSON from evidence/{article_slug}.json.
+Read site reviewers from site/reviewers.json. It is always present as a JSON array and may be empty.
 Read voice baseline from site/voice.json first. Only read site/brand-voice.md if site/voice.json is missing or malformed.
-Write recommendation JSON to recommendations/{article_slug}.json.
+Read the GEO contract from references/geo-article-contract.md via read_bundle_text.
+Write recommendations via `record_recommendations`, not `write_json_artifact`.
 Never use Bash/Read/Write on /Users/... paths.
+Treat prompt matching as the primary Peec evidence path. Topics are optional grouping signals.
 ```
 
-Set `mode = "peec-enriched"` only when `gaps/{article_slug}.json` exists. Otherwise set `mode = "voice-rubric"`.
+Set `mode = "peec-enriched"` only when `gaps/{article_slug}.json` exists and its admissibility is positive. Otherwise block the article instead of drafting a weak fallback.
 
 Recommender sub-agents update per-article `stages.recommendations` only. The main session owns top-level `pipeline.analysis` and `pipeline.recommendations` aggregate state.
 
@@ -267,24 +302,7 @@ After all recommender sub-agents return:
    - set `status = "failed"`
    - stop the pipeline
 
-Unless `--no-gates` is set, stop here for review before Stage 6:
-
-1. Call `set_gate` with:
-
-```json
-{
-  "run_id": "<run_id>",
-  "gate": "recommend_gate",
-  "status": "pending",
-  "prompt": "Review the recommendation set before draft generation.",
-  "timeout_seconds": 300
-}
-```
-
-2. Poll `get_gates` every 10 seconds.
-3. Do not continue until `recommend_gate.status == "resolved"`.
-
-### Stage 6 — Draft
+### Stage 7 — Draft
 
 Dispatch generators in batches of 3 in a single assistant message.
 
@@ -294,6 +312,7 @@ Each generator receives:
 - `article_slug`
 - `peec_project_id`
 - `site_key`
+- `reviewers_path`
 - `voice_markdown_path`
 - `voice_meta_path`
 - absolute output paths from `register_run`
@@ -303,24 +322,27 @@ Prompt contract additions:
 ```text
 Use dashboard MCP artifact tools for all host-side reads and writes.
 Read article JSON from articles/{article_slug}.json.
+Read evidence JSON from evidence/{article_slug}.json.
 Read recommendation JSON from recommendations/{article_slug}.json.
-Read decisions from run/decisions.json.
+Read site reviewers from site/reviewers.json. It is always present as a JSON array and may be empty.
 Read voice baseline from site/voice.json first. Only read site/brand-voice.md if site/voice.json is missing or malformed.
-Write draft artefacts under optimised/{article_slug}.*.
+Read the GEO contract from references/geo-article-contract.md via read_bundle_text.
+Write draft artefacts through `record_draft_package`.
+If the article cannot honestly support a compliant rewrite, call `fail_article_stage(stage="draft", ...)`.
 Never use Bash/Read/Write on /Users/... paths.
+The draft is complete only when the manifest quality gate passes.
 ```
 
 Generator sub-agents update per-article `stages.draft` only. The main session owns top-level `pipeline.draft` aggregate state.
 
-## Gates
+## Finalization
 
-Unless `--no-gates` is set, use gates after:
+After draft work finishes, call `finalize_run_report`.
 
-- crawl
-- voice
-- recommendations
-
-The dashboard reads `gates.json` from disk. When opening a gate, write it with a 5-minute timeout. Poll `get_gates` every 10 seconds and trust the returned status as authoritative. Never infer timeout from wall-clock time in the conversation. The server resolves expired gates and records `timeout-auto-proceed` itself.
+- The dashboard is a report surface, not an orchestration surface.
+- `run-summary.md` must be generated from disk truth after validation completes.
+- Use `draft-ready` vs `blocked` language in user-facing summaries.
+- Deprecated `set_gate` / `get_gates` tools should not be part of the main flow.
 
 ## Resume mode
 
@@ -332,8 +354,9 @@ For `--resume {run_id}`:
 4. Resume only incomplete stages:
    - if `pipeline.crawl.status == "completed"`, do not re-crawl
    - if `voice.mode == "reused"` or `pipeline.voice.status == "completed"`, do not regenerate voice unless `--refresh-voice`
+   - skip any article whose `stages.evidence.status == "completed"`
    - skip any article whose `stages.recommendations.status == "completed"`
-   - skip any article whose `stages.draft.status == "completed"`
+   - skip any article whose `stages.draft.quality_gate == "passed"`
 
 ## Final state expectations
 

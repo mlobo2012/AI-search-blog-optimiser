@@ -23,9 +23,7 @@ The absolute paths are host paths for reference only. Do not use `Read`, `Write`
 
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__list_artifacts`
 - `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_json_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__write_text_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__write_json_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__update_state`
+- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_voice_baseline`
 
 ## Procedure
 
@@ -39,23 +37,17 @@ The absolute paths are host paths for reference only. Do not use `Read`, `Write`
    - trust and citation register
    - CTA pattern
    - 3-5 exemplar rewrites
-4. Write the markdown baseline to `site/brand-voice.md` via `write_text_artifact`.
-5. Write the metadata JSON to `site/voice.json` via `write_json_artifact`.
-6. Push this state fragment:
+4. Call `record_voice_baseline` with the markdown baseline and metadata payload:
 
 ```json
 {
-  "voice": {
-    "mode": "generated",
+  "markdown": "# Brand voice\n...",
+  "metadata": {
+    "site_key": "<site_key>",
     "source_run_id": "<run_id>",
     "updated_at": "<updated_at>",
-    "summary": "<summary>"
-  },
-  "pipeline": {
-    "voice": {
-      "status": "completed",
-      "detail": "<summary>"
-    }
+    "summary": "<summary>",
+    "version": 1
   }
 }
 ```
@@ -70,4 +62,4 @@ Return at most 150 tokens:
 
 - Never read or write project-scoped voice namespaces.
 - Never use host absolute paths with `Read`, `Write`, or `Bash`.
-- Never silently skip `voice.json`.
+- Never bypass `record_voice_baseline` with generic artifact writes.
