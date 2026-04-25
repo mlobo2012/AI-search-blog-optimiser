@@ -2938,6 +2938,14 @@ def _remove_first_matching(values: list[Any], predicate: Any) -> list[Any]:
 
 
 def _apply_trust_author_fallback(run_dir: Path, article_slug: str, manifest: dict[str, Any]) -> None:
+    # If the validator already accepted the author via author_validation, do not override.
+    # The existing trust_block from _validate_trust_block (Lane G) is the source of truth.
+    author_validation = manifest.get("author_validation")
+    if isinstance(author_validation, dict) \
+       and author_validation.get("status") == "passed" \
+       and str(author_validation.get("display_name") or "").strip():
+        return
+
     state = _load_state(run_dir / "state.json")
     output_paths = _output_paths(run_dir)
     article = _read_json(output_paths["articles_dir"] / f"{article_slug}.json")
