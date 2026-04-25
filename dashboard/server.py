@@ -2450,6 +2450,7 @@ RECOMMENDATION_REQUIRED_TOP_LEVEL = {
 }
 RECOMMENDATION_REQUIRED_REC_FIELDS = {"id", "source", "category", "severity", "priority", "signal_types", "evidence"}
 PEEC_RECOMMENDATION_MODES = {"peec-prompt-matched", "peec-topic-level"}
+CLAIM_SYNTHESIS_PROMPT_THRESHOLD = 3
 
 
 def _validation_list(value: Any) -> list[Any]:
@@ -2539,27 +2540,51 @@ def _editorial_dominated_prompt_count(gap: dict[str, Any]) -> int:
     return dominated
 
 
-def _claim_synthesis_has_matching_rec(claims: list[Any], llm_items: list[dict[str, Any]]) -> bool:
-    if not claims:
-        return True
+def _prompt_id_set(value: Any) -> set[str]:
+    return {str(item) for item in _validation_list(value) if str(item).strip()}
+
+
+def _claim_synthesis_pair_issues(claims: list[Any], llm_items: list[dict[str, Any]]) -> list[str]:
+    issues: list[str] = []
     claim_recs = [item for item in llm_items if item.get("category") == "claim_synthesis"]
+    if claim_recs and not claims:
+        issues.append("claim_synthesis recommendations require non-empty top-level synthesis_claims")
+        return issues
     if not claim_recs:
-        return False
-    for claim in claims:
+        if claims:
+            issues.append("synthesis_claims entries require matching claim_synthesis recommendations")
+        return issues
+
+    claim_prompt_union: set[str] = set()
+    for index, claim in enumerate(claims):
         if not isinstance(claim, dict):
+            issues.append(f"synthesis_claims[{index}] must be an object")
             continue
-        prompt_ids = {str(item) for item in _validation_list(claim.get("addresses_prompts")) if str(item).strip()}
+        prompt_ids = _prompt_id_set(claim.get("addresses_prompts"))
         if not prompt_ids:
-            return False
-        matched = False
-        for rec in claim_recs:
-            rec_prompts = {str(item) for item in _validation_list(rec.get("addresses_prompts")) if str(item).strip()}
-            if prompt_ids & rec_prompts:
-                matched = True
-                break
-        if not matched:
-            return False
-    return True
+            issues.append(f"synthesis_claims[{index}] addresses_prompts must contain prompt ids")
+            continue
+        if len(prompt_ids) < CLAIM_SYNTHESIS_PROMPT_THRESHOLD:
+            issues.append(
+                f"synthesis_claims[{index}] addresses_prompts must contain at least "
+                f"{CLAIM_SYNTHESIS_PROMPT_THRESHOLD} prompt ids"
+            )
+        claim_prompt_union.update(prompt_ids)
+
+    for rec in claim_recs:
+        rec_id = rec.get("id") or "claim_synthesis recommendation"
+        rec_prompts = _prompt_id_set(rec.get("addresses_prompts"))
+        if len(rec_prompts) < CLAIM_SYNTHESIS_PROMPT_THRESHOLD:
+            issues.append(
+                f"{rec_id} addresses_prompts must contain at least "
+                f"{CLAIM_SYNTHESIS_PROMPT_THRESHOLD} prompt ids"
+            )
+            continue
+        missing_from_claims = sorted(rec_prompts - claim_prompt_union)
+        if missing_from_claims:
+            issues.append(f"{rec_id} addresses_prompts missing from synthesis_claims: {', '.join(missing_from_claims)}")
+
+    return issues
 
 
 def _validate_recommendation_payload(recommendations: dict[str, Any], gap: dict[str, Any]) -> list[str]:
@@ -2642,8 +2667,7 @@ def _validate_recommendation_payload(recommendations: dict[str, Any], gap: dict[
             issues.append("Missing source_displacement recommendation with competitors_displaced for EDITORIAL dominance trigger")
 
     synthesis_claims = _validation_list(recommendations.get("synthesis_claims"))
-    if synthesis_claims and not _claim_synthesis_has_matching_rec(synthesis_claims, llm_items):
-        issues.append("synthesis_claims entries require matching claim_synthesis recommendations")
+    issues.extend(_claim_synthesis_pair_issues(synthesis_claims, llm_items))
 
     return issues
 
@@ -2653,7 +2677,7 @@ def _raise_recommendation_validation(run_id: str, article_slug: str, issues: lis
     try:
         _tool_show_banner({
             "run_id": run_id,
-            "severity": "error",
+            "severity": "warn",
             "message": f"Recommendation validation failed for {article_slug}: {detail}",
         })
     except Exception:
