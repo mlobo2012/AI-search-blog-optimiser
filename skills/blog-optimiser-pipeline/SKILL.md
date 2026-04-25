@@ -328,9 +328,12 @@ Read site reviewers from site/reviewers.json. It is always present as a JSON arr
 Read voice baseline from site/voice.json first. Only read site/brand-voice.md if site/voice.json is missing or malformed.
 Read the GEO contract from references/geo-article-contract.md via read_bundle_text.
 Write draft artefacts through `record_draft_package`.
+After writing draft files, compute a self-rubric scorecard and write it to `optimised/{article_slug}.manifest.json`.
+The manifest MUST include `audit_before`, `audit_after`, `breakdown`, and `quality_gate`, where `quality_gate` is `pass` only at `audit_after >= 32` with no missing required modules or blocking trust/evidence/schema/scope issues.
+Persist `articles[].stages.draft.audit_after` and `articles[].stages.draft.quality_gate` directly from the manifest.
 If the article cannot honestly support a compliant rewrite, call `fail_article_stage(stage="draft", ...)`.
 Never use Bash/Read/Write on /Users/... paths.
-The draft is complete only when the manifest quality gate passes.
+The orchestrator does not call a separate server-side quality gate in this path; the generator-owned manifest and draft-stage update are the source of truth.
 ```
 
 Generator sub-agents update per-article `stages.draft` only. The main session owns top-level `pipeline.draft` aggregate state.
