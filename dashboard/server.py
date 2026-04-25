@@ -47,6 +47,10 @@ try:
     from dashboard.quality_gate import build_article_manifest
 except ImportError:
     from quality_gate import build_article_manifest
+try:
+    from dashboard.rubric_lint import lint_article
+except ImportError:
+    from rubric_lint import lint_article
 
 # ---------------------------------------------------------------------------
 # Paths + state
@@ -332,6 +336,7 @@ def _output_paths(run_dir: Path) -> dict[str, Path]:
         "articles_dir": outputs_dir / "articles",
         "evidence_dir": outputs_dir / "evidence",
         "recommendations_dir": outputs_dir / "recommendations",
+        "rubric_dir": outputs_dir / "rubric",
         "optimised_dir": outputs_dir / "optimised",
         "media_dir": outputs_dir / "media",
         "raw_dir": outputs_dir / "raw",
@@ -407,6 +412,7 @@ ARTIFACT_NAMESPACES = [
     "articles",
     "evidence",
     "recommendations",
+    "rubric",
     "optimised",
     "raw",
     "gaps",
@@ -420,6 +426,7 @@ JSON_WRITE_NAMESPACES = [
     "articles",
     "evidence",
     "recommendations",
+    "rubric",
     "optimised",
     "gaps",
     "competitors",
@@ -442,6 +449,7 @@ def _artifact_base_dir(run_id: str, namespace: str) -> Path:
         "articles": output_paths["articles_dir"],
         "evidence": output_paths["evidence_dir"],
         "recommendations": output_paths["recommendations_dir"],
+        "rubric": output_paths["rubric_dir"],
         "optimised": output_paths["optimised_dir"],
         "raw": output_paths["raw_dir"],
         "gaps": output_paths["gaps_dir"],
@@ -1625,6 +1633,18 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "rubric_lint",
+        "description": "Run deterministic GEO rubric lint for one article, write rubric/{slug}.json, and refresh articles[].stages.rubric_lint.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "article_slug": {"type": "string"},
+            },
+            "required": ["run_id", "article_slug"],
+        },
+    },
+    {
         "name": "record_voice_baseline",
         "description": "Atomically write the site-scoped brand voice baseline and refresh pipeline.voice plus state.voice.",
         "inputSchema": {
@@ -2355,31 +2375,318 @@ def _tool_record_evidence_pack(args: dict) -> dict:
     }
 
 
+def _tool_rubric_lint(args: dict) -> dict:
+    run_id = args["run_id"]
+    article_slug = args["article_slug"]
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
+    output_paths = _output_paths(run_dir)
+    article_path = output_paths["articles_dir"] / f"{article_slug}.json"
+    article = _read_json(article_path)
+    if not isinstance(article, dict):
+        raise ValueError(f"Article artifact not found or invalid: articles/{article_slug}.json")
+
+    evidence = _read_json(output_paths["evidence_dir"] / f"{article_slug}.json")
+    if not isinstance(evidence, dict):
+        evidence = {}
+
+    state_path = run_dir / "state.json"
+    state = _load_state(state_path)
+    site_key = str(state.get("site_key") or "")
+    site_dir = Path((state.get("outputs") or {}).get("site_dir") or _site_paths(site_key)["site_dir"])
+    voice_meta = _read_json(site_dir / "voice.json")
+    if not isinstance(voice_meta, dict):
+        voice_meta = {}
+
+    items = lint_article(article, evidence, voice_meta)
+    total = 13
+    failed = len(items)
+    passed = max(total - failed, 0)
+    payload = {
+        "article_slug": article_slug,
+        "run_id": run_id,
+        "generated_at": _now_iso(),
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "items": items,
+    }
+    rubric_path = output_paths["rubric_dir"] / f"{article_slug}.json"
+    with STATE_LOCK:
+        _write_json(rubric_path, payload)
+        state = _load_state(state_path)
+        _deep_merge(state, {
+            "articles": [
+                {
+                    "slug": article_slug,
+                    "stages": {
+                        "rubric_lint": {
+                            "status": "completed",
+                            "total": total,
+                            "passed": passed,
+                            "failed": failed,
+                        }
+                    },
+                }
+            ]
+        })
+        _refresh_pipeline_aggregates(state)
+        state["updated_at"] = _now_iso()
+        _write_json(state_path, state)
+    return {"total": total, "passed": passed, "failed": failed}
+
+
+RECOMMENDATION_REQUIRED_TOP_LEVEL = {
+    "category_lens",
+    "brand_lens",
+    "competition_lens",
+    "engine_gap_strategy",
+    "primary_gaps",
+    "recommendations",
+    "mode",
+    "audit",
+    "summary",
+}
+RECOMMENDATION_REQUIRED_REC_FIELDS = {"id", "source", "category", "severity", "priority", "signal_types", "evidence"}
+PEEC_RECOMMENDATION_MODES = {"peec-prompt-matched", "peec-topic-level"}
+
+
+def _validation_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _validation_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _validation_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _llm_recommendations(items: list[Any]) -> list[dict[str, Any]]:
+    return [item for item in items if isinstance(item, dict) and item.get("source") == "llm"]
+
+
+def _rec_signal_types(rec: dict[str, Any]) -> list[str]:
+    return [str(item) for item in _validation_list(rec.get("signal_types")) if str(item).strip()]
+
+
+def _rec_target_engines(rec: dict[str, Any]) -> list[str]:
+    return [str(item) for item in _validation_list(rec.get("target_engines")) if str(item).strip()]
+
+
+def _gap_prompts(gap: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for item in _validation_list(gap.get("matched_prompts")) if isinstance(item, dict)]
+
+
+def _sentiment_triggers(gap: dict[str, Any]) -> set[str]:
+    engines: set[str] = set()
+    for prompt in _gap_prompts(gap):
+        sentiment = _validation_dict(_validation_dict(prompt.get("brand")).get("sentiment_per_engine"))
+        for engine, value in sentiment.items():
+            numeric = _validation_float(value)
+            if numeric is not None and numeric < 65:
+                engines.add(str(engine))
+    topic_sentiment = _validation_dict(_validation_dict(gap.get("topic_level_signals")).get("engine_sentiment"))
+    for engine, value in topic_sentiment.items():
+        numeric = _validation_float(value)
+        if numeric is not None and numeric < 65:
+            engines.add(str(engine))
+    return engines
+
+
+def _has_engine_asymmetry_trigger(gap: dict[str, Any]) -> bool:
+    return any(len(_validation_list(prompt.get("engines_lost"))) >= 2 for prompt in _gap_prompts(gap))
+
+
+def _off_page_triggers(gap: dict[str, Any]) -> list[dict[str, Any]]:
+    actions = _validation_dict(gap.get("peec_actions"))
+    triggers: list[dict[str, Any]] = []
+    for item in _validation_list(actions.get("overview_top_opportunities")):
+        if not isinstance(item, dict):
+            continue
+        gap_percentage = _validation_float(item.get("gap_percentage"))
+        relative_score = _validation_float(item.get("relative_score"))
+        if gap_percentage is not None and relative_score is not None and gap_percentage >= 50 and relative_score >= 2:
+            triggers.append(item)
+    return triggers
+
+
+def _classification_counts(values: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in values:
+        classification = str(item.get("classification") or "").strip().upper()
+        if not classification:
+            continue
+        counts[classification] = counts.get(classification, 0) + 1
+    return counts
+
+
+def _editorial_dominated_prompt_count(gap: dict[str, Any]) -> int:
+    dominated = 0
+    for prompt in _gap_prompts(gap):
+        competitors = [item for item in _validation_list(prompt.get("cited_competitors")) if isinstance(item, dict)]
+        counts = _classification_counts(competitors)
+        if not counts:
+            continue
+        editorial = counts.get("EDITORIAL", 0)
+        if editorial and editorial == max(counts.values()):
+            dominated += 1
+    return dominated
+
+
+def _claim_synthesis_has_matching_rec(claims: list[Any], llm_items: list[dict[str, Any]]) -> bool:
+    if not claims:
+        return True
+    claim_recs = [item for item in llm_items if item.get("category") == "claim_synthesis"]
+    if not claim_recs:
+        return False
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        prompt_ids = {str(item) for item in _validation_list(claim.get("addresses_prompts")) if str(item).strip()}
+        if not prompt_ids:
+            return False
+        matched = False
+        for rec in claim_recs:
+            rec_prompts = {str(item) for item in _validation_list(rec.get("addresses_prompts")) if str(item).strip()}
+            if prompt_ids & rec_prompts:
+                matched = True
+                break
+        if not matched:
+            return False
+    return True
+
+
+def _validate_recommendation_payload(recommendations: dict[str, Any], gap: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    missing_top = sorted(field for field in RECOMMENDATION_REQUIRED_TOP_LEVEL if field not in recommendations)
+    if missing_top:
+        issues.append("Missing required top-level fields: " + ", ".join(missing_top))
+
+    items = recommendations.get("recommendations")
+    if not isinstance(items, list):
+        issues.append("recommendations.recommendations must be an array")
+        return issues
+
+    mode = recommendations.get("mode")
+    if mode not in PEEC_RECOMMENDATION_MODES | {"voice-rubric"}:
+        issues.append("mode must be peec-prompt-matched, peec-topic-level, or voice-rubric")
+
+    llm_items = _llm_recommendations(items)
+    llm_count = len(llm_items)
+    if mode in PEEC_RECOMMENDATION_MODES and not 3 <= llm_count <= 8:
+        issues.append(f"LLM-source recommendation count must be 3-8 for {mode}; got {llm_count}")
+    if mode == "voice-rubric" and not 2 <= llm_count <= 6:
+        issues.append(f"LLM-source recommendation count must be 2-6 for voice-rubric; got {llm_count}")
+
+    for index, rec in enumerate(items):
+        if not isinstance(rec, dict):
+            issues.append(f"recommendations[{index}] must be an object")
+            continue
+        missing_fields = sorted(field for field in RECOMMENDATION_REQUIRED_REC_FIELDS if field not in rec)
+        if missing_fields:
+            issues.append(f"{rec.get('id') or f'recommendations[{index}]'} missing required fields: {', '.join(missing_fields)}")
+        if rec.get("source") not in {"rubric", "llm"}:
+            issues.append(f"{rec.get('id') or f'recommendations[{index}]'} source must be rubric or llm")
+        if not _rec_signal_types(rec):
+            issues.append(f"{rec.get('id') or f'recommendations[{index}]'} signal_types must contain at least 1 value")
+        if not _validation_list(rec.get("evidence")):
+            issues.append(f"{rec.get('id') or f'recommendations[{index}]'} evidence must contain at least 1 value")
+        if rec.get("source") == "llm":
+            target_engines = _rec_target_engines(rec)
+            per_engine_lift = _validation_dict(rec.get("per_engine_lift"))
+            if not target_engines:
+                issues.append(f"{rec.get('id') or f'recommendations[{index}]'} target_engines must contain at least 1 value")
+            if not per_engine_lift:
+                issues.append(f"{rec.get('id') or f'recommendations[{index}]'} per_engine_lift must contain at least 1 entry")
+            elif not any(engine in per_engine_lift for engine in target_engines):
+                issues.append(f"{rec.get('id') or f'recommendations[{index}]'} per_engine_lift must include a target engine key")
+
+    if mode in PEEC_RECOMMENDATION_MODES:
+        distinct_signals = {signal for rec in llm_items for signal in _rec_signal_types(rec)}
+        if len(distinct_signals) < 3:
+            issues.append(f"LLM-source recs must contain at least 3 distinct signal_types; got {len(distinct_signals)}")
+
+    sentiment_engines = _sentiment_triggers(gap)
+    if sentiment_engines:
+        covered = {
+            engine
+            for rec in llm_items
+            if rec.get("category") == "sentiment"
+            for engine in _rec_target_engines(rec)
+            if engine in sentiment_engines
+        }
+        missing = sorted(sentiment_engines - covered)
+        if missing:
+            issues.append("Missing sentiment recommendation for engines: " + ", ".join(missing))
+
+    if _has_engine_asymmetry_trigger(gap):
+        if not any(rec.get("category") == "engine_specific" or "engine_pattern_asymmetry" in _rec_signal_types(rec) for rec in llm_items):
+            issues.append("Missing engine_specific or engine_pattern_asymmetry recommendation for engines_lost >= 2 trigger")
+
+    off_page_triggers = _off_page_triggers(gap)
+    if off_page_triggers:
+        off_page_actions = _validation_list(recommendations.get("off_page_actions"))
+        if not any(rec.get("category") == "off_page" for rec in llm_items):
+            issues.append("Missing off_page recommendation for Peec action trigger")
+        if not off_page_actions:
+            issues.append("Missing top-level off_page_actions entry for Peec action trigger")
+
+    if _editorial_dominated_prompt_count(gap) >= 4:
+        if not any(rec.get("category") == "source_displacement" and _validation_list(rec.get("competitors_displaced")) for rec in llm_items):
+            issues.append("Missing source_displacement recommendation with competitors_displaced for EDITORIAL dominance trigger")
+
+    synthesis_claims = _validation_list(recommendations.get("synthesis_claims"))
+    if synthesis_claims and not _claim_synthesis_has_matching_rec(synthesis_claims, llm_items):
+        issues.append("synthesis_claims entries require matching claim_synthesis recommendations")
+
+    return issues
+
+
+def _raise_recommendation_validation(run_id: str, article_slug: str, issues: list[str]) -> None:
+    detail = "; ".join(issues)
+    try:
+        _tool_show_banner({
+            "run_id": run_id,
+            "severity": "error",
+            "message": f"Recommendation validation failed for {article_slug}: {detail}",
+        })
+    except Exception:
+        pass
+    raise ValueError(f"Recommendation validation failed: {detail}")
+
+
 def _tool_record_recommendations(args: dict) -> dict:
     run_id = args["run_id"]
     article_slug = args["article_slug"]
     recommendations = _require_object(args["recommendations"], "recommendations")
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise ValueError(f"Run {run_id} does not exist")
     payload_slug = recommendations.get("article_slug")
     if payload_slug is None:
         recommendations["article_slug"] = article_slug
     elif payload_slug != article_slug:
         raise ValueError("recommendations.article_slug must match article_slug")
-    items = recommendations.get("recommendations")
-    if not isinstance(items, list):
-        raise ValueError("recommendations.recommendations must be an array")
-    if len(items) != 4:
-        raise ValueError("recommendations.recommendations must contain exactly 4 items")
-    matched_prompts = recommendations.get("matched_prompts")
-    if isinstance(matched_prompts, list) and len(matched_prompts) > 2:
-        raise ValueError("recommendations.matched_prompts must contain at most 2 items")
-    run_dir = RUNS_DIR / run_id
-    if not run_dir.exists():
-        raise ValueError(f"Run {run_id} does not exist")
+    gap = _read_json(_output_paths(run_dir)["gaps_dir"] / f"{article_slug}.json")
+    if not isinstance(gap, dict):
+        gap = {}
+    validation_issues = _validate_recommendation_payload(recommendations, gap)
+    if validation_issues:
+        _raise_recommendation_validation(run_id, article_slug, validation_issues)
+    items = recommendations["recommendations"]
     rec_path = _output_paths(run_dir)["recommendations_dir"] / f"{article_slug}.json"
     audit = recommendations.get("audit") if isinstance(recommendations.get("audit"), dict) else {}
     critical_count = recommendations.get("critical_count")
     if not isinstance(critical_count, int):
-        critical_count = len([item for item in items if isinstance(item, dict) and (item.get("required") or item.get("critical") or item.get("severity") == "critical")])
+        critical_count = len([item for item in items if isinstance(item, dict) and item.get("priority") == "critical"])
+    recommendations["recommendation_count"] = len(items)
+    recommendations["critical_count"] = critical_count
     state_path = run_dir / "state.json"
     with STATE_LOCK:
         _write_json(rec_path, recommendations)
@@ -2532,6 +2839,7 @@ def _refresh_quality_status(manifest: dict[str, Any]) -> None:
     quality_gate["missing_required_modules"] = missing
     quality_gate["blocking_issues"] = blocking
     quality_gate["status"] = "passed" if not missing and not blocking else "failed"
+    quality_gate["passed"] = quality_gate["status"] == "passed"
 
 
 def _apply_internal_link_domain_fix(run_dir: Path, article_slug: str, manifest: dict[str, Any]) -> None:
@@ -2841,6 +3149,7 @@ def _tool_record_draft_package(args: dict) -> dict:
     diff_markdown = package.get("diff_markdown")
     handoff_markdown = package.get("handoff_markdown")
     audit_after = _safe_int(package.get("audit_after"))
+    rec_implementation_map = package.get("rec_implementation_map")
     if not isinstance(markdown, str) or not markdown.strip():
         raise ValueError("package.markdown is required")
     if not isinstance(html_text, str) or not html_text.strip():
@@ -2851,6 +3160,8 @@ def _tool_record_draft_package(args: dict) -> dict:
         raise ValueError("package.diff_markdown is required")
     if not isinstance(handoff_markdown, str) or not handoff_markdown.strip():
         raise ValueError("package.handoff_markdown is required")
+    if rec_implementation_map is not None and not isinstance(rec_implementation_map, dict):
+        raise ValueError("package.rec_implementation_map must be a JSON object when provided")
 
     with STATE_LOCK:
         _atomic_write(output_paths["optimised_dir"] / f"{article_slug}.md", markdown)
@@ -2865,6 +3176,10 @@ def _tool_record_draft_package(args: dict) -> dict:
         draft_stage["status"] = "running"
         if audit_after is not None:
             draft_stage["audit_after"] = audit_after
+        if isinstance(rec_implementation_map, dict):
+            _write_json(output_paths["optimised_dir"] / f"{article_slug}.manifest.json", {
+                "rec_implementation_map": rec_implementation_map,
+            })
         state["updated_at"] = _now_iso()
         _write_json(state_path, state)
 
@@ -3097,6 +3412,7 @@ TOOL_DISPATCH = {
     "write_text_artifact": _tool_write_text_artifact,
     "write_json_artifact": _tool_write_json_artifact,
     "record_evidence_pack": _tool_record_evidence_pack,
+    "rubric_lint": _tool_rubric_lint,
     "record_recommendations": _tool_record_recommendations,
     "record_voice_baseline": _tool_record_voice_baseline,
     "record_peec_gap": _tool_record_peec_gap,

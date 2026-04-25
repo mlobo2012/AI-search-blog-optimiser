@@ -553,6 +553,53 @@ def _count_internal_links(snapshot: HTMLSnapshot, article_url: str) -> tuple[int
     return len(unique), unique
 
 
+def _validate_rec_implementation(manifest: dict, recommendations: dict) -> list[str]:
+    issues: list[str] = []
+    if not isinstance(manifest, dict):
+        manifest = {}
+    if not isinstance(recommendations, dict):
+        recommendations = {}
+    rec_map = manifest.get("rec_implementation_map")
+    if not isinstance(rec_map, dict):
+        rec_map = {}
+    recs = recommendations.get("recommendations")
+    if not isinstance(recs, list):
+        return issues
+
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("priority") != "critical" or rec.get("source") != "llm":
+            continue
+        rec_id = str(rec.get("id") or "").strip()
+        if not rec_id:
+            issues.append("critical LLM recommendation has no valid implementation entry")
+            continue
+        entry = rec_map.get(rec_id)
+        if not isinstance(entry, dict):
+            issues.append(f"{rec_id} has no valid implementation entry")
+            continue
+        implemented = entry.get("implemented")
+        if implemented is True:
+            schema_fields = entry.get("schema_fields")
+            evidence_inserted = entry.get("evidence_inserted")
+            has_schema_fields = isinstance(schema_fields, list) and bool(schema_fields)
+            has_evidence = isinstance(evidence_inserted, list) and bool(evidence_inserted)
+            if not str(entry.get("section") or "").strip() or not str(entry.get("anchor") or "").strip() or not (has_schema_fields or has_evidence):
+                issues.append(f"{rec_id} has no valid implementation entry")
+            continue
+        if implemented is False:
+            reason = str(entry.get("reason") or "").strip()
+            if reason in {"non-applicable", "data_missing"}:
+                continue
+            if reason.startswith("superseded_by_") and len(reason) > len("superseded_by_"):
+                continue
+            issues.append(f"{rec_id} has no valid implementation entry")
+            continue
+        issues.append(f"{rec_id} has no valid implementation entry")
+    return issues
+
+
 def _inline_evidence_usage(snapshot: HTMLSnapshot, evidence: dict[str, Any], article_url: str) -> tuple[int, set[str], list[str]]:
     visible = snapshot.visible_text.lower()
     linked_urls = {
@@ -862,6 +909,8 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
         if missing_html_types:
             blocking_issues.append(f"Rendered HTML is missing required schema types: {', '.join(missing_html_types)}.")
         blocking_issues.extend(schema_notes)
+    rec_implementation_issues = _validate_rec_implementation(existing_manifest, recommendations)
+    blocking_issues.extend(rec_implementation_issues)
 
     quality_status = "passed" if not blocking_issues and not missing_required_modules else "failed"
     audit = recommendations.get("audit") or {}
@@ -881,9 +930,11 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
         "audit_after": resolved_audit_after,
         "quality_gate": {
             "status": quality_status,
+            "passed": quality_status == "passed",
             "missing_required_modules": missing_required_modules,
             "blocking_issues": blocking_issues,
         },
+        "rec_implementation_map": existing_manifest.get("rec_implementation_map") if isinstance(existing_manifest.get("rec_implementation_map"), dict) else {},
         "implemented_modules": sorted(key for key, value in module_status.items() if value),
         "missing_required_modules": missing_required_modules,
         "author_validation": author_validation,
