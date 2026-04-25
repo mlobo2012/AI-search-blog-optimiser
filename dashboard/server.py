@@ -3148,6 +3148,7 @@ def _tool_record_draft_package(args: dict) -> dict:
     diff_markdown = package.get("diff_markdown")
     handoff_markdown = package.get("handoff_markdown")
     audit_after = _safe_int(package.get("audit_after"))
+    rec_implementation_map = package.get("rec_implementation_map")
     if not isinstance(markdown, str) or not markdown.strip():
         raise ValueError("package.markdown is required")
     if not isinstance(html_text, str) or not html_text.strip():
@@ -3158,6 +3159,8 @@ def _tool_record_draft_package(args: dict) -> dict:
         raise ValueError("package.diff_markdown is required")
     if not isinstance(handoff_markdown, str) or not handoff_markdown.strip():
         raise ValueError("package.handoff_markdown is required")
+    if rec_implementation_map is not None and not isinstance(rec_implementation_map, dict):
+        raise ValueError("package.rec_implementation_map must be a JSON object when provided")
 
     with STATE_LOCK:
         _atomic_write(output_paths["optimised_dir"] / f"{article_slug}.md", markdown)
@@ -3172,6 +3175,10 @@ def _tool_record_draft_package(args: dict) -> dict:
         draft_stage["status"] = "running"
         if audit_after is not None:
             draft_stage["audit_after"] = audit_after
+        if isinstance(rec_implementation_map, dict):
+            _write_json(output_paths["optimised_dir"] / f"{article_slug}.manifest.json", {
+                "rec_implementation_map": rec_implementation_map,
+            })
         state["updated_at"] = _now_iso()
         _write_json(state_path, state)
 

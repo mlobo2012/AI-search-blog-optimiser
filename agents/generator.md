@@ -90,17 +90,29 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
    - Include a visible reviewer block with full name, role, published date, updated/reviewed date, and a one-line evidence basis.
    - Prefer a retrieval-oriented title/H1 when the source title is too launch-like to win the
      matched prompts.
-10. If the article cannot honestly support a compliant rewrite, call `fail_article_stage(stage="draft", reason=...)` instead of forcing output.
-11. Otherwise call `record_draft_package` with:
+10. Populate `rec_implementation_map` after the schema package is complete:
+   - Iterate over every item in `recommendations.recommendations`.
+   - Write one entry per rec id into `rec_implementation_map`.
+   - For implemented recs, set `implemented: true` and include `section`, `anchor`, and at least
+     one of `schema_fields[]` or `evidence_inserted[]`.
+   - For non-applicable recs, set `implemented: false` and `reason` to one of:
+     `non-applicable`, `superseded_by_<rec_id>`, or `data_missing`.
+   - Critical LLM-source recs must never be omitted. If a critical LLM-source rec cannot be
+     implemented and none of the three reasons is honest, call `fail_article_stage`.
+   - Rubric-source recs still receive entries, but a non-applicable reason is acceptable when the
+     final draft or schema layer supersedes the deterministic lint item.
+11. If the article cannot honestly support a compliant rewrite, call `fail_article_stage(stage="draft", reason=...)` instead of forcing output.
+12. Otherwise call `record_draft_package` with:
    - `markdown`
    - `html`
    - `schema`
    - `diff_markdown`
    - `handoff_markdown`
    - optional `audit_after`
-12. The manifest must be controller-generated, not self-reported. Do not write `optimised/{article_slug}.manifest.json` yourself.
-13. Trust the returned validator status as authoritative. Do not push a conflicting draft status.
-14. Scope drift is a hard failure. If the rewrite pivots to a new topic, prompt family, or entity set, the controller should block it.
+   - `rec_implementation_map`
+13. The manifest must be controller-generated, not self-reported. Do not write `optimised/{article_slug}.manifest.json` yourself. The controller will copy `rec_implementation_map` into `optimised/{article_slug}.manifest.json` and validate it.
+14. Trust the returned validator status as authoritative. Do not push a conflicting draft status.
+15. Scope drift is a hard failure. If the rewrite pivots to a new topic, prompt family, or entity set, the controller should block it.
 Never write top-level `stages`. Never write `articles` as an object map keyed by slug. Use `completed`, not `complete`. Never mark top-level `pipeline.draft` from a single-article generator; the validator and main session own draft truth. Never use top-level article keys like `draft_status`, `status`, or `quality_gate` as substitutes for `articles[].stages.draft`.
 
 ## HTML Schema Example
