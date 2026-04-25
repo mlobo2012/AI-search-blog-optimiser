@@ -779,39 +779,13 @@ def _validate_author(
 
 
 def _validate_trust_block(author_validation: dict[str, Any], reviewers: list[dict[str, Any]]) -> dict[str, Any]:
-    review_lookup = {
-        str(item.get("id")): item
-        for item in reviewers
-        if isinstance(item, dict) and item.get("id")
-    }
     reviewer_id = author_validation.get("reviewer_id")
     author_passed = author_validation.get("status") == "passed"
-
-    if reviewer_id:
-        reviewer = review_lookup.get(str(reviewer_id))
-        reviewer_name = str(
-            (reviewer or {}).get("name")
-            or (reviewer or {}).get("display_name")
-            or (reviewer or {}).get("full_name")
-            or ""
-        ).strip()
-        if author_passed and reviewer and reviewer.get("active", False) and reviewer_name:
-            return {
-                "passed": True,
-                "source": "reviewers_json",
-                "author_name": reviewer_name,
-            }
-        return {
-            "passed": False,
-            "source": "reviewers_json",
-            "author_name": "",
-        }
-
     display_name = str(author_validation.get("display_name") or "").strip()
     if author_passed and display_name:
         return {
             "passed": True,
-            "source": "author_validation",
+            "source": "reviewers_json" if reviewer_id else "author_validation",
             "author_name": display_name,
         }
     return {
