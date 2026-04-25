@@ -79,6 +79,13 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
    - Multiple schema types may be combined in one JSON-LD block with `@graph` or split across
      multiple `application/ld+json` blocks. In either form, the JSON inside each script tag must be
      valid JSON, not Markdown or JavaScript.
+   - Any visible FAQ section must use definition-list markup:
+     `<dl>` containing one `<dt>` question and one following `<dd>` answer for each FAQ item. Do
+     not render FAQ questions as heading tags followed by paragraphs.
+   - If the recommendations do not explicitly require an FAQ, you may add one when the
+     recommendations contain at least 3 distinct user-question patterns such as "How do I...",
+     "What is...", or "Can <brand>...". When you add a visible FAQ, the FAQPage schema questions
+     must exactly match the visible `<dt>` question text.
    - Include at least `internal_link_plan.minimum_internal_links` contextual internal links.
    - Include a visible reviewer block with full name, role, published date, updated/reviewed date, and a one-line evidence basis.
    - Prefer a retrieval-oriented title/H1 when the source title is too launch-like to win the
@@ -150,6 +157,24 @@ with the real schema content substituted:
   </article>
 </body>
 </html>
+```
+
+## FAQ Markup Example
+
+Use this structure for every FAQ block so the validator can extract visible questions:
+
+```html
+<section aria-labelledby="faq-heading">
+  <h2 id="faq-heading">FAQ</h2>
+  <dl>
+    <dt>How do I use the product for meeting notes?</dt>
+    <dd>Use the product during a meeting, then review and share the generated notes with the team.</dd>
+    <dt>What makes the workflow different from a transcript?</dt>
+    <dd>The workflow turns discussion into structured notes, decisions, and follow-up context.</dd>
+    <dt>Can the product support recurring team rituals?</dt>
+    <dd>Yes. Use the same workspace and internal links to keep recurring rituals connected.</dd>
+  </dl>
+</section>
 ```
 
 ## Output
