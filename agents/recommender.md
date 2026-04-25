@@ -129,6 +129,15 @@ engine-specific narratives.
 Aggregate competitor classifications across prompt competitors and gap-domain competitors. Weight
 entries by `citation_rate` when available, otherwise count each domain once.
 
+Use this decision tree:
+
+1. Build `by_classification` with unique domains per class.
+2. Determine prompt-level dominance by class; a prompt is EDITORIAL-dominated when EDITORIAL is
+   tied for or greater than every other class.
+3. Determine global dominance by weighted domain count.
+4. Choose the first matching strategy below and reflect it in both `competition_lens` and at least
+   one LLM-source rec when the strategy requires action.
+
 - EDITORIAL dominance: emit a `source_displacement` rec proposing outreach to the top 2 editorial
   domains, and an `off_page` rec proposing an owned listicle.
 - COMPETITOR homepage dominance: emit an on-page comparison or positioning rec naming the top
@@ -169,6 +178,16 @@ Do not create one rec per prompt when one claim addresses the cluster.
   `source_displacement` rec with `competitors_displaced[]`.
 - Voice-rubric mode: If no Peec gap is admissible, write synthesis recs from article, evidence,
   voice, and the GEO contract only. Do not invent Peec metrics.
+
+## Evidence Reference Rules
+
+- Prompt evidence uses `peec_prompt_<prompt_id>` when a prompt id exists.
+- Engine asymmetry evidence uses `peec_signal_engine_pattern_asymmetry`.
+- Sentiment evidence uses `peec_sentiment_<engine>_<value>` plus one short gap-chat excerpt when
+  available.
+- Off-page evidence uses the exact source index, for example
+  `peec_actions.overview_top_opportunities[0]`.
+- Rubric evidence uses the exact rubric item id, for example `rubric_id_meta_description_empty`.
 
 ## Locked Output Schema
 
