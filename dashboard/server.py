@@ -402,6 +402,17 @@ ARTIFACT_NAMESPACES = [
     "media",
 ]
 
+JSON_WRITE_NAMESPACES = [
+    "site",
+    "articles",
+    "evidence",
+    "recommendations",
+    "optimised",
+    "gaps",
+    "competitors",
+    "peec_cache",
+]
+
 
 def _artifact_base_dir(run_id: str, namespace: str) -> Path:
     run_dir = RUNS_DIR / run_id
@@ -1567,7 +1578,7 @@ MCP_TOOLS = [
             "type": "object",
             "properties": {
                 "run_id": {"type": "string"},
-                "namespace": {"type": "string", "enum": ["site", "articles", "evidence", "recommendations", "optimised", "gaps", "competitors", "peec_cache"]},
+                "namespace": {"type": "string", "enum": JSON_WRITE_NAMESPACES},
                 "relative_path": {"type": "string"},
                 "data": {},
             },
