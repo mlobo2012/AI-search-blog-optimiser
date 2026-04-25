@@ -2,6 +2,31 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.6.3] — 2026-04-25
+
+Iteration 6 single-bug fix from the v0.6.2 smoke run `2026-04-25T21-32-17`
+(post pycache-purge re-run). Lane G's `_validate_trust_block` fix in
+v0.6.2 was correct, but a second writer in `dashboard/server.py` —
+`_apply_trust_author_fallback` — was clobbering the result.
+
+### Lane I — server (dashboard/server.py)
+- **Bug 17** — `_apply_trust_author_fallback` now early-returns when
+  `author_validation.status == "passed"` AND `display_name` is non-empty.
+  Previously it always ran after `build_article_manifest` and
+  unconditionally rewrote `trust_block`, which clobbered Lane G's correct
+  resolution when the source article's `trust.author` was null (granola-chat
+  case where the crawler did not capture a source byline). The function's
+  original purpose — applying `article_author_fallback` for empty-reviewers
+  + full-name-source-author cases — is preserved when the validator has not
+  yet accepted the author.
+
+### Acceptance test
+- tests/bug_17_trust_author_fallback_guard_test.md (Lane I)
+
+### Origin
+v0.6.2 smoke run `2026-04-25T21-32-17`. Spec at
+`specs/2026-04-25-bugs-iteration6.md`.
+
 ## [0.6.2] — 2026-04-25
 
 Iteration 5 bug fixes from the v0.6.1 smoke run `2026-04-25T20-12-28`.
