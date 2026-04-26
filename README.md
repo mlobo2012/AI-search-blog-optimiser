@@ -334,7 +334,7 @@ skills/
 references/
 ```
 
-Use the source checkout for the latest code. The ZIP files in `dist/` are older builds.
+Use the source checkout for the latest code, or use the latest `dist/ai-search-blog-optimiser-v0.7.0-cowork.zip` package for a Cowork zip install.
 
 ### 2. Connect Peec MCP
 
@@ -353,9 +353,9 @@ The plugin expects a Peec project with:
 - tracked prompts
 - at least one day of Peec data
 
-### 3. Make Crawl4AI available
+### 3. Make Firecrawl or Crawl4AI available
 
-The workflow uses Crawl4AI to fetch blog pages. If Crawl4AI is not connected, the command stops during prereqs before creating a run.
+The workflow prefers Firecrawl MCP for discovery and page fetches when Claude exposes `firecrawl_map` and `firecrawl_scrape`. Crawl4AI MCP remains supported as the fallback crawler. If neither crawler is connected, the command stops during prereqs before creating a run.
 
 ### 4. Run the Granola example
 
