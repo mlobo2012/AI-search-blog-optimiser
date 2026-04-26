@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI Search Blog Optimiser — local dashboard server (v0.5.6).
+AI Search Blog Optimiser — local dashboard server (v0.6.7).
 
 Two run modes:
   - Default (MCP stdio): Claude Cowork spawns this as its MCP server. The MCP
@@ -62,7 +62,7 @@ except ImportError:
 # user-writable location. Default roots are platform-native and versioned under
 # v3. Override with BLOG_OPTIMISER_DATA_ROOT for tests/dev only.
 
-VERSION = "0.5.6"
+VERSION = "0.6.7"
 DEFAULT_GATE_TIMEOUT_SECONDS = 300
 BUNDLE_READ_ROOTS = ("references", "skills")
 JSON_STRINGISH_PREFIXES = tuple('{["-0123456789tfn')

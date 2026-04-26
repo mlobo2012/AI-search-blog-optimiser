@@ -2,6 +2,15 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.6.7] — 2026-04-26
+
+Dashboard hotfix for Claude Cowork run reports.
+
+- Fixed article detail expansion so "View recommendations" renders the saved recommendation artifact instead of an empty row.
+- Fixed "View draft article" so completed drafts render the optimized HTML iframe for the selected article.
+- Prevented hidden article rows from preloading missing recommendation/draft artifacts, removing noisy 404s for articles that were intentionally blocked.
+- Bumped dashboard/runtime version display to `0.6.7` for install clarity.
+
 ## [0.6.6] — 2026-04-26
 
 Iteration 9 — final integration of the v0.6 release line. Closes the

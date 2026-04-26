@@ -185,13 +185,13 @@
                     </td>
                   </tr>
 
-                  <tr x-show="panelOpen(article.slug)">
-                    <td colspan="7" class="bg-surface-light p-0">
-                      <div class="p-6 border-t border-gray-200" x-data="articleDetail(article, expanded.panel)" x-init="load()">
-                        <div x-show="loading" class="text-sm text-gray-500">Loading article artifacts…</div>
+                  <template x-if="panelOpen(article.slug)">
+                    <tr>
+                      <td colspan="7" class="bg-surface-light p-0">
+                        <div class="p-6 border-t border-gray-200" x-data="articleDetail(article, expanded)" x-init="load()">
+                          <div x-show="activePanel() && loading" class="text-sm text-gray-500">Loading article artifacts…</div>
 
-                        <template x-if="!loading && panel === 'recommendations'">
-                          <section class="space-y-5">
+                          <section x-show="!loading && activePanel() === 'recommendations'" class="space-y-5">
                             <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                               <div>
                                 <h3 class="font-heading text-xl" x-text="article.title || article.slug"></h3>
@@ -261,10 +261,8 @@
                               </template>
                             </div>
                           </section>
-                        </template>
 
-                        <template x-if="!loading && panel === 'draft'">
-                          <section class="space-y-5">
+                          <section x-show="!loading && activePanel() === 'draft'" class="space-y-5">
                             <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                               <div>
                                 <h3 class="font-heading text-xl" x-text="article.title || article.slug"></h3>
@@ -303,10 +301,10 @@
                               </div>
                             </template>
                           </section>
-                        </template>
-                      </div>
-                    </td>
-                  </tr>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
                 </tbody>
               </template>
             </table>
@@ -329,7 +327,7 @@
 <script>
 function dashboard() {
   return {
-    version: '0.5.6',
+    version: '0.6.7',
     state: null,
     pollTimer: null,
     expanded: {slug: null, panel: null},
@@ -406,10 +404,12 @@ function dashboard() {
 
     togglePanel(slug, panel) {
       if (this.expanded.slug === slug && this.expanded.panel === panel) {
-        this.expanded = {slug: null, panel: null};
+        this.expanded.slug = null;
+        this.expanded.panel = null;
         return;
       }
-      this.expanded = {slug, panel};
+      this.expanded.slug = slug;
+      this.expanded.panel = panel;
     },
 
     panelOpen(slug) {
@@ -497,12 +497,13 @@ function dashboard() {
   };
 }
 
-function articleDetail(article, panel) {
+function articleDetail(article, expanded) {
   return {
     article,
-    panel,
+    expanded,
     slug: article?.slug,
-    loading: true,
+    loading: false,
+    loaded: false,
     articleData: null,
     recommendations: null,
     manifest: null,
@@ -512,8 +513,13 @@ function articleDetail(article, panel) {
       return window.location.pathname.match(/\/runs\/([^\/]+)\/?/)?.[1];
     },
 
+    activePanel() {
+      return this.expanded?.slug === this.slug ? this.expanded.panel : null;
+    },
+
     async load() {
       this.loading = true;
+      this.loaded = false;
       try {
         const runId = this.runId();
         const [articleResp, recsResp, manifestResp] = await Promise.all([
@@ -530,6 +536,7 @@ function articleDetail(article, panel) {
         this.manifest = null;
       } finally {
         this.loading = false;
+        this.loaded = true;
       }
     },
 
