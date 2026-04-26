@@ -1,125 +1,254 @@
 # AI Search Blog Optimiser
 
-A Claude Cowork desktop plugin for rewrite-only blog optimisation aimed at AI-search citation. It crawls an existing blog, builds a site-scoped brand voice baseline, generates evidence-grounded recommendations, and either produces an optimised rewrite or blocks the article truthfully in a local report dashboard.
+## TL;DR
 
-## What changed in v0.5
+Give AI Search Blog Optimiser a company blog URL. It indexes the blog, learns and reuses the brand voice, reads Peec MCP data, creates GEO recommendations, and uses a writer agent to turn existing posts into optimised articles.
 
-This release is a clean break:
+It is built for regular GEO blog optimisation: review owned content every 2-4 weeks, identify which posts are falling behind competitors or missing from AI answers, and refresh the pages that can win back visibility.
 
-- new runs are registered before any dashboard tab opens
-- the dashboard home page never redirects to the latest run
-- local state lives in a new versioned data root
-- brand voice reuse is keyed by site, not by Peec project id
-- `register_run` returns the absolute paths the orchestration needs
-- Peec is required for new runs
-- dashboard review remains, but dashboard-driven continue gates are deprecated
-- recommendation and draft generation now follow a stricter GEO rewrite contract
-- site-scoped reviewers live alongside the site voice baseline
-- evidence packs are first-class run artefacts
-- draft manifests are now written by a deterministic validator, not by generator self-reporting
-- core site/gap/competitor/draft writes now have typed host-owned MCP tools
-- final run reports are generated from disk truth
+Impact: turn an existing blog into a repeatable AI-search optimisation loop, so product marketers and content teams can improve 40, 50, or 100 articles with the same process instead of doing one-off audits.
 
-## Command
+## Quick Start
+
+Run this in Claude Cowork:
 
 ```text
-/blog-optimiser https://your-blog.com/blog [--refresh-voice] [--resume {run_id}] [--max-articles N]
+/blog-optimiser https://www.granola.ai/blog --max-articles 2
 ```
 
-## Storage
-
-Writable root selection:
-
-- `CLAUDE_PLUGIN_DATA` when Cowork provides it
-- otherwise platform default roots below
-- `BLOG_OPTIMISER_DATA_ROOT` overrides both for tests/dev only
-
-Default fallback roots:
-
-- macOS: `~/Library/Application Support/ai-search-blog-optimiser/v3`
-- Linux: `~/.local/share/ai-search-blog-optimiser/v3`
-- Windows: `%APPDATA%\ai-search-blog-optimiser\v3`
-
-When `CLAUDE_PLUGIN_DATA` is used, the runtime performs a one-time import from the legacy default root if the new plugin data directory is empty. Set `BLOG_OPTIMISER_SKIP_LEGACY_IMPORT=1` to disable that import path in tests or debugging.
-
-Layout:
+For your own blog:
 
 ```text
-v3/
-  runs/{run_id}/
-    state.json
-    gates.json
-    run-summary.md
-    outputs/
-      articles/
-      evidence/
-      recommendations/
-      optimised/
-      media/
-      raw/
-      gaps/
-      competitors/
-      peec-cache/
-  sites/{site_key}/
-    brand-voice.md
-    voice.json
-    reviewers.json
-  dashboard.lock
+/blog-optimiser https://your-company.com/blog --max-articles 10
 ```
 
-## Runtime rules
+What happens:
 
-- The main session is the orchestrator.
-- `open_dashboard` requires a concrete `run_id`.
-- `register_run` is the bootstrap call for fresh runs.
-- `register_run` requires `peec_project_id`.
-- `get_paths` is no longer part of the normal flow.
-- `state.json` is the source of truth.
-- Same-site voice reuse is automatic unless `--refresh-voice` is set.
-- Peec is required. Missing Peec should block the run or article instead of silently downgrading to a GEO-only rewrite.
-- Peec MCP discovery is capability-based, not server-name-based. In Cowork, a valid external Peec MCP may appear under a UUID-style tool prefix instead of `mcp__peec__...`.
-- The dashboard is a read-only report surface. It should not own orchestration or continue controls.
-- `write_json_artifact` expects raw JSON objects or arrays. The runtime now normalizes accidentally stringified JSON payloads for backward compatibility.
-- Core pipeline writes should use typed dashboard tools so artifact persistence and state updates happen atomically.
+- the dashboard opens for the run
+- the blog index is crawled
+- the plugin pulls article content from the URLs it finds
+- brand voice is generated and saved for reuse in later runs
+- Peec data is used to find where the brand is missing in AI answers
+- competitor and top-cited source patterns are used to shape the recommendations
+- recommendations are passed to a writer agent to create an optimised article
+- you get markdown, HTML, schema, diff, handoff notes, and a quality manifest
 
-## Dashboard behavior
+## What Problem Does This Solve?
 
-- `/` is a neutral home/history page
-- `/runs/{run_id}/` is the run-bound dashboard page
-- no route auto-selects the latest run
+Owned content matters for AI search, but most company blogs were not written for answer engines.
 
-## Embedded MCP tools
+Product marketers, content teams, SEO teams, PR teams, and agencies now have to answer questions like:
 
-- `open_dashboard`
-- `get_dashboard_url`
-- `register_run`
-- `update_state`
-- `record_crawl_discovery`
-- `record_crawled_article`
-- `finalize_crawl`
-- `list_runs`
-- `show_banner`
-- `set_gate`
-- `get_gates`
-- `record_evidence_pack`
-- `record_recommendations`
-- `record_voice_baseline`
-- `record_peec_gap`
-- `record_competitor_snapshot`
-- `record_draft_package`
-- `fail_article_stage`
-- `finalize_run_report`
+- Are we mentioned when buyers ask ChatGPT or Perplexity about our category?
+- Which competitors are being cited instead?
+- Which third-party pages are AI engines trusting?
+- What structure or semantics do those cited pages have that our article is missing?
+- Can we improve our existing blog post instead of commissioning a new one?
 
-## Development
+Doing this manually is slow.
 
-Run the regression suite:
+The work usually looks like this:
 
-```bash
-python3 tests/dashboard_e2e_test.py
+1. Run buyer prompts across ChatGPT, Perplexity, Google AI Overview, Gemini, Claude, and Copilot.
+2. Capture which brands appear and which sources get cited.
+3. Open competitor pages and top-cited editorial pages.
+4. Compare their structure, schema, FAQ coverage, trust signals, evidence, and phrasing.
+5. Decide what your article is missing.
+6. Turn that into a digestible recommendation list.
+7. Hand it to a writer or product marketer.
+8. Rewrite the article.
+9. Check that the rewrite added the TL;DR, evidence, links, schema, FAQ, trust block, and prompt-shaped sections.
+10. Repeat every few weeks because competitors publish, category language shifts, product claims change, and AI engines update which owned pages they trust.
+
+That may be manageable for one or two posts. It breaks down across 40, 50, or 100 articles. At that scale it is not possible to maintain manually as a dynamic system that keeps improving every week and month as the category and market move.
+
+AI Search Blog Optimiser automates the upstream work: crawling your pages, reading Peec research, comparing against competitor and top-cited pages, generating recommendations, and then passing those recommendations into a writer agent that creates the optimised article.
+
+It is a workflow for repurposing what you already own.
+
+## How It Works
+
+You give it the blog URL.
+
+The crawler indexes the blog and pulls article content. Run it in batches of 5-10 articles when you want a focused review, or run larger batches when you are ready to work through the whole blog.
+
+Then the workflow runs in stages:
+
+1. **Crawl the blog** - discovers article URLs from the blog index and saves the source content.
+2. **Extract brand voice** - builds a reusable voice baseline for that site.
+3. **Read Peec MCP gaps** - pulls the relevant Peec project, tracked prompts, AI engine visibility, share of voice, sentiment, ranking position, competitor mentions, cited domains, source gaps, AI response excerpts, and Peec action opportunities.
+4. **Build evidence** - gathers the claims, sources, reviewer signals, and internal links the rewrite is allowed to use.
+5. **Generate recommendations** - creates a practical optimisation plan: TL;DR, prompt-shaped headings, missing claims, source-backed evidence, internal links, FAQ/schema, trust block, sentiment fixes, engine-specific tactics, and off-page or comparison-page opportunities where Peec shows a gap.
+6. **Create the optimised article** - the writer agent turns the recommendation list and original article into a new article with better semantics, structure, content language, evidence placement, and schema.
+7. **Check the article package** - confirms schema, FAQ coverage, evidence, trust signals, internal links, recommendation coverage, and quality gate status.
+
+The important part is the waterfall: blog URL in, articles crawled, brand voice generated or reused, Peec MCP visibility gaps read, cited competitors and sources compared, recommendations generated, writer agent creates the optimised article, content team gets the handoff.
+
+Instead of stopping at "here are recommendations", the workflow carries the work into an optimised article package.
+
+## Granola Example
+
+The example run used:
+
+```text
+/blog-optimiser https://www.granola.ai/blog --max-articles 2
 ```
 
-Validate the server module:
+It processed:
 
-```bash
-python3 -m py_compile dashboard/server.py
+- `Granola Chat just got smarter`
+- `Granola raises $125M to put your company's context to work`
+
+### 1. Source Blog Post
+
+The crawler pulled the original Granola Chat article. The post was called "Granola Chat just got smarter", written by Jack, and opened by announcing a smarter and faster Granola Chat.
+
+The article had useful product information, but it was written like a launch post. It did not directly answer the buyer prompts the brand needed to win.
+
+### 2. Peec-Backed Gap Analysis
+
+The workflow matched the post to 3 tracked prompts and found:
+
+- ChatGPT visibility was about 4.5%.
+- Perplexity visibility was 0%.
+- Google AI Overview visibility was about 38%.
+- ChatGPT sentiment floor was 59.
+- The dominant cited content shape was listicles.
+- Granola had 0% owned coverage for that dominant content shape.
+
+The insight: Granola's own blog post was not competing with the listicles and competitor pages that answer engines already trusted.
+
+### 3. Recommendations
+
+The recommendation agent did not produce vague advice like "improve SEO".
+
+It produced concrete changes:
+
+- Add a clear TL;DR that states what changed, what Granola Chat does, and why inline citations make it auditable.
+- Add a "Who it is for" or "Works with" section naming Google Meet, Zoom, and Microsoft Teams.
+- Replace vague capability language with a specific claim about cross-meeting search, Team Space, and inline citations.
+- Add source-backed evidence for the claims that were previously unsupported.
+- Reshape headings around the exact questions buyers are likely to ask.
+
+This is the difference: recommendations are based on Peec visibility data, top-cited source patterns, competitor presence, and the article's own structure.
+
+### 4. Optimised Article
+
+The writer agent then used the recommendations and source article to create a new optimised article.
+
+It added a clear TL;DR section at the top of the article:
+
+**TL;DR**
+
+> We've rebuilt Granola Chat from the ground up as an agentic assistant. It searches across all your meeting notes - personal notes, Team Space, and privately shared notes - and returns answers with inline citations that link to the source meeting. Works with Google Meet, Zoom, and Microsoft Teams.
+
+It also reshaped the article around answer-style sections:
+
+- How does Granola Chat search across all your past meetings?
+- Who is Granola Chat for, and which meeting platforms does it support?
+- How does Granola turn meeting notes into team knowledge?
+
+The output is not just a report. It is an article your content team can review, edit, and publish. The run also creates a quality manifest so the team can see whether evidence, schema, FAQ, trust, internal links, and recommendation coverage passed.
+
+## What You Get Back
+
+For each article, the workflow returns:
+
+- the original article capture
+- the Peec MCP gap analysis
+- the evidence pack
+- the recommendation list
+- the optimised markdown article
+- rendered HTML with embedded schema
+- standalone schema JSON
+- a diff from the original article
+- a handoff note for the content team
+- a manifest showing what passed and what blocked
+
+## Regular GEO Blog Optimisation
+
+Owned content is not static in AI search.
+
+The article that wins today can lose ground when a competitor publishes a stronger comparison page, updates a product claim, adds fresher evidence, earns a citation from a trusted source, or starts appearing more consistently across the same prompts your buyers ask. Your own positioning also changes: new features ship, proof points improve, customer language gets sharper, and old launch posts stop matching how the category is now described.
+
+That is why the sweet spot is usually a 2-4 week optimisation cycle. It is frequent enough to catch movement in Peec visibility, competitor presence, cited domains, sentiment, and source gaps, but not so frequent that teams rewrite pages before there is enough signal to learn from.
+
+This workflow lets a product marketer or content lead run the same process every 2-4 weeks:
+
+1. Crawl the blog.
+2. Reuse the saved brand voice.
+3. Pull fresh Peec visibility, competitor, source, sentiment, and action data.
+4. Find which owned posts are missing, stale, under-structured, or being beaten by competitor pages.
+5. Generate recommendations for the next batch of 5-10 articles.
+6. Let the writer agent turn those recommendations into optimised articles.
+7. Send markdown and handoff notes to the content team.
+
+That is the core value: not a one-off audit, but a repeatable owned-content optimisation loop that keeps your blog aligned with how the category, your brand, and competitor visibility are moving.
+
+## Install And Run
+
+### 1. Install the plugin from this repo
+
+In Claude Cowork, install this folder as a local plugin. Choose the repo root, the folder that contains:
+
+```text
+.claude-plugin/plugin.json
+commands/blog-optimiser.md
+dashboard/server.py
+agents/
+skills/
+references/
 ```
+
+Use the source checkout for the latest code. The ZIP files in `dist/` are older builds.
+
+### 2. Connect Peec MCP
+
+Add the Peec MCP server to Claude/Cowork:
+
+```text
+https://api.peec.ai/mcp
+```
+
+Use Streamable HTTP transport and sign in through Peec OAuth when prompted.
+
+The plugin expects a Peec project with:
+
+- own brand configured
+- competitors configured
+- tracked prompts
+- at least one day of Peec data
+
+### 3. Make Crawl4AI available
+
+The workflow uses Crawl4AI to fetch blog pages. If Crawl4AI is not connected, the command stops during prereqs before creating a run.
+
+### 4. Run the Granola example
+
+```text
+/blog-optimiser https://www.granola.ai/blog --max-articles 2
+```
+
+Watch for:
+
+- local dashboard URL
+- `run_id`
+- article crawl count
+- recommendation count
+- ready vs blocked status
+
+### 5. Run your own blog
+
+```text
+/blog-optimiser https://your-company.com/blog --max-articles 10
+```
+
+Then review:
+
+```text
+run-summary.md
+outputs/recommendations/
+outputs/optimised/
+```
+
+If an article is blocked, read the reason first. A blocked article usually means the system could not find enough evidence, trust, or source support to ship a defensible rewrite.
