@@ -139,6 +139,29 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
 15. Scope drift is a hard failure. If the rewrite pivots to a new topic, prompt family, or entity set, the controller should block it.
 Never write top-level `stages`. Never write `articles` as an object map keyed by slug. Use `completed`, not `complete`. Never mark top-level `pipeline.draft` from a single-article generator; the validator and main session own draft truth. Never use top-level article keys like `draft_status`, `status`, or `quality_gate` as substitutes for `articles[].stages.draft`.
 
+## Headings / Structure
+
+- Use one visible H1 that matches the article's retrieval-oriented title.
+- Use H2s for the main body sections and H3s only for nested subsections within an H2 section.
+- Preserve the article's information architecture unless the recommendation blueprint explicitly
+  requires a restructuring to satisfy the GEO article contract.
+- **Question-H2 enforcement.** When the rec list contains any recommendation whose `category` is in
+  `{"engine_specific", "geo_hygiene"}` AND whose `title` or `description` mentions FAQ, question H2,
+  question-format headings, or "question target", the optimised draft MUST satisfy the
+  question_headings GEO contract: at least 50% of body H2s (excluding the literal "FAQ" label) MUST
+  be in question form. Question form means starts with
+  `Which/How/What/Why/When/Where/Who/Can/Does/Is/Are/Should` (case-insensitive) OR ends with `?`.
+  If the source draft has fewer questions than this threshold, you MUST rewrite existing H2s in
+  question form rather than just adding a separate FAQ section. Preserve the article's information
+  architecture; do not invent topics. Rephrase the headings that already exist around the article's
+  actual sections so that they ASK the question the section answers. Examples:
+  - "Auditable by design" -> "How is Granola Chat auditable by design?"
+  - "New Recipes" -> "Which new Recipes can I run in Granola Chat?"
+  - "Putting your company's context to work" -> "How does Granola Chat put your company's context to work?"
+
+  The detector accepts BOTH `?` suffix and question-word prefix; do not contort phrasing to force a
+  `?` if a natural question-word prefix reads better.
+
 ## HTML Schema Example
 
 Every HTML draft must include JSON-LD in the `<head>` before body content. Use this exact pattern,
