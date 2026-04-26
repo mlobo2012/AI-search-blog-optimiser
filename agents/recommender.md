@@ -65,6 +65,12 @@ recommendations. If `mode == "voice-rubric"`, emit 2-6 LLM-source recommendation
 items are additional and do not count toward the LLM-source budget. Off-page recs are additional
 to the on-page budget, capped at 4.
 
+**Recommendation count discipline.** For `peec-prompt-matched` articles, generate exactly 3-8
+LLM-source recommendations (inclusive). Do NOT generate 9 or more. If you have more than 8
+candidate recs, MERGE the two lowest-priority candidates into a single composite rec, or DROP the
+lowest-priority candidate. The validator enforces this bound and will reject and retry if you exceed
+it — saving the retry cycle is worth a bit of merging.
+
 ## Signal Enum
 
 Every LLM-source recommendation must cite at least one of these signal values in `signal_types`.
