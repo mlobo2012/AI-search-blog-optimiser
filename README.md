@@ -13,7 +13,7 @@ Impact: turn an existing blog into a repeatable AI-search optimisation loop, so 
 Run this in Claude Cowork:
 
 ```text
-/blog-optimiser https://www.granola.ai/blog --max-articles 2
+/blog-optimiser https://www.granola.ai/blog --max-articles 3
 ```
 
 For your own blog:
@@ -88,67 +88,86 @@ Instead of stopping at "here are recommendations", the workflow carries the work
 
 ## Granola Example
 
-The example run used:
+The example run used a focused batch of 3 Granola posts:
 
-```text
-/blog-optimiser https://www.granola.ai/blog --max-articles 2
-```
+- `Introducing Granola MCP`
+- `Delete parts of a transcript`
+- `Sign in with Microsoft is here`
 
-It processed:
+These are better examples because each article maps to a real GEO prompt family: integrations and workflows, privacy and security, and Microsoft Teams/Outlook adoption.
 
-- `Granola Chat just got smarter`
-- `Granola raises $125M to put your company's context to work`
+### 1. Peec-Backed Gap Analysis
 
-### 1. Source Blog Post
+The workflow matched the articles to Granola's Peec prompt library and found different gaps for each page.
 
-The crawler pulled the original Granola Chat article. The post was called "Granola Chat just got smarter", written by Jack, and opened by announcing a smarter and faster Granola Chat.
+For `Introducing Granola MCP`, the relevant prompt family was integrations and workflows. Granola visibility was 8% in ChatGPT and 5% in Perplexity, while Google AI Overview was 60%. Peec showed competing and adjacent sources such as HubSpot, Notelinker, Fireflies, AssemblyAI, and Otter getting cited around workflow prompts.
 
-The article had useful product information, but it was written like a launch post. It did not directly answer the buyer prompts the brand needed to win.
+For `Delete parts of a transcript`, the relevant prompt family was privacy, security, and no-bot meeting capture. Granola had stronger visibility in Google AI Overview, but sentiment was weak across engines: ChatGPT 53, Perplexity 59, and Google AI Overview 63. Peec showed security and legal sources being cited where Granola needed clearer owned evidence.
 
-### 2. Peec-Backed Gap Analysis
+For `Sign in with Microsoft is here`, the relevant prompt family was Microsoft Teams and workflow adoption. Granola was absent in Perplexity and only 13% visible in ChatGPT, while Google AI Overview was 63%. Peec showed that answer engines were leaning on integration-specific pages and editorial listicles instead of Granola's own launch post.
 
-The workflow matched the post to 3 tracked prompts and found:
+Across the project, Peec Actions surfaced the same strategic pattern: owned listicles were the largest opportunity, with a High opportunity score, 100% gap, and 0% owned coverage. Editorial listicles and YouTube were also meaningful secondary surfaces.
 
-- ChatGPT visibility was about 4.5%.
-- Perplexity visibility was 0%.
-- Google AI Overview visibility was about 38%.
-- ChatGPT sentiment floor was 59.
-- The dominant cited content shape was listicles.
-- Granola had 0% owned coverage for that dominant content shape.
+### 2. Recommendations
 
-The insight: Granola's own blog post was not competing with the listicles and competitor pages that answer engines already trusted.
+The recommendation agent turned those gaps into specific changes.
 
-### 3. Recommendations
+For the MCP article, it recommended:
 
-The recommendation agent did not produce vague advice like "improve SEO".
+- Add an answer-first TL;DR that names Claude, ChatGPT, Cursor, Linear, HubSpot, and meeting context.
+- Rewrite headings around integration prompts such as Jira/Linear workflows, CRM updates, Notion workflows, and cross-tool meeting context.
+- Add an owned integrations/listicle play because Peec showed owned listicles as the largest gap.
 
-It produced concrete changes:
+For the transcript-deletion article, it recommended:
 
-- Add a clear TL;DR that states what changed, what Granola Chat does, and why inline citations make it auditable.
-- Add a "Who it is for" or "Works with" section naming Google Meet, Zoom, and Microsoft Teams.
-- Replace vague capability language with a specific claim about cross-meeting search, Team Space, and inline citations.
-- Add source-backed evidence for the claims that were previously unsupported.
-- Reshape headings around the exact questions buyers are likely to ask.
+- Explain the security value in the TL;DR: transcript deletion controls what Granola Chat can surface before a note is shared.
+- Replace soft "good habit" language with concrete control language: delete transcript chunks, regenerate the note, pause transcription, and cite SOAISEC Labs.
+- Add visible trust and evidence from Granola Security, Granola's data FAQ, SOAISEC Labs, and the source article.
 
-This is the difference: recommendations are based on Peec visibility data, top-cited source patterns, competitor presence, and the article's own structure.
+For the Microsoft article, it recommended:
 
-### 4. Optimised Article
+- Retitle the page around Microsoft Teams and Outlook demand, not just sign-in.
+- Add named Microsoft evidence and setup language to close the Perplexity zero-visibility gap.
+- Add a comparison-style table showing Microsoft account/SSO, Outlook calendar, Teams reminders, and searchable meeting notes.
 
-The writer agent then used the recommendations and source article to create a new optimised article.
+### 3. Optimised Article Sections
 
-It added a clear TL;DR section at the top of the article:
+The writer agent then generated article packages from the recommendations.
 
-**TL;DR**
+For `Introducing Granola MCP`, the new TL;DR became:
 
-> We've rebuilt Granola Chat from the ground up as an agentic assistant. It searches across all your meeting notes - personal notes, Team Space, and privately shared notes - and returns answers with inline citations that link to the source meeting. Works with Google Meet, Zoom, and Microsoft Teams.
+> Granola MCP lets Claude, ChatGPT, Cursor, and other MCP clients use your meeting context when you ask. Instead of copying notes between tools, teams can create Linear tickets, update CRM notes, draft proposals, and use discovery conversations as context.
 
-It also reshaped the article around answer-style sections:
+It also added answer-style sections:
 
-- How does Granola Chat search across all your past meetings?
-- Who is Granola Chat for, and which meeting platforms does it support?
-- How does Granola turn meeting notes into team knowledge?
+- What does Granola MCP let AI apps do with meeting context?
+- Which workflows can Granola MCP support?
+- How do you set up Granola MCP?
+- Why is this rewrite more citation-ready?
 
-The output is not just a report. It is an article your content team can review, edit, and publish. The run also creates a quality manifest so the team can see whether evidence, schema, FAQ, trust, internal links, and recommendation coverage passed.
+For `Delete parts of a transcript`, the new TL;DR became:
+
+> Granola lets you delete specific transcript chunks while keeping the rest of a meeting note intact. That matters before sharing because Granola Chat can use transcript context. Delete sensitive details, regenerate the note, or pause transcription before discussing private information.
+
+It also added sections that make the privacy value extractable:
+
+- What changes when you delete part of a Granola transcript?
+- When should you delete transcript chunks before sharing?
+- Which evidence makes the privacy claim stronger?
+- How should teams use this as a shared-note habit?
+
+For `Sign in with Microsoft is here`, the new TL;DR became:
+
+> Granola now supports Microsoft account or SSO sign-in, Outlook calendar context, and smoother Teams meeting workflows. Microsoft-based teams can see events in Granola, join Teams calls from reminders, and search meeting notes after the conversation.
+
+It also added Microsoft-specific structure:
+
+- What does Sign in with Microsoft change for Granola users?
+- How does Granola support Microsoft Teams meetings?
+- Why does this article need more evidence for Perplexity and ChatGPT?
+- How does this help teams search meeting knowledge later?
+
+The dashboard quality gate marked all 3 article packages as draft-ready at 36/40 after checking TL;DR, trust block, prompt-shaped headings, inline evidence, internal links, FAQ schema, specialized schema, and recommendation coverage.
 
 ## What You Get Back
 
@@ -226,7 +245,7 @@ The workflow uses Crawl4AI to fetch blog pages. If Crawl4AI is not connected, th
 ### 4. Run the Granola example
 
 ```text
-/blog-optimiser https://www.granola.ai/blog --max-articles 2
+/blog-optimiser https://www.granola.ai/blog --max-articles 3
 ```
 
 Watch for:
