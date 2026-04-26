@@ -2,6 +2,53 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.6.5] — 2026-04-26
+
+Iteration 8 fixes from the v0.6.4 verification smoke `2026-04-26T10-13-57`
+(canonical pair: granola-chat-just-got-smarter + series-c). v0.6.4 closed
+the trust-author work but the smoke surfaced 3 system bugs blocking the
+quality gate even when the recommender produced correct recs and the
+generator applied them. Spec at `specs/2026-04-26-bugs-iteration8.md`.
+Two parallel Codex agents (gpt-5.5, reasoning_effort high).
+
+### Lane K — validator (dashboard/quality_gate.py)
+- **Bug 19** — `_validate_trust_block` now promotes a strong reviewer from
+  `reviewers_json` when the source author byline fails author validation.
+  Previously the validator could reject "Jack Whitton, Marketing" as too
+  weak even when reviewers.json carried "Chris Pedregal, CEO &
+  Co-founder" with bio + LinkedIn — the reviewer was the actual trust
+  signal but the validator never consulted it. The promotion mutates
+  `author_validation.status` to `"passed"` with reviewer display_name /
+  display_role / reviewer_id and a detail field that explains the
+  promotion. Bug 18 source contract preserved (`reviewers_json` is
+  explicitly the source for the reviewer-promoted path).
+- **Bug 20** — internal-source classifier now uses apex-domain equality
+  instead of exact host string match. `docs.granola.ai` and
+  `app.granola.ai` are now correctly counted as internal sources for
+  `https://www.granola.ai/blog`. The 2-internal-source minimum is
+  unchanged; only the classifier was wrong. Substring tricks
+  (`granolafake.com` vs `granola.ai`) still fail the apex check.
+
+### Lane L — generator (agents/generator.md)
+- **Bug 21** — generator now enforces the GEO question_headings contract
+  when the rec list contains any `engine_specific` or `geo_hygiene`
+  recommendation that mentions FAQ, question H2, or question-format
+  headings. Previously the generator treated FAQ recs as additive (add a
+  separate FAQ block) rather than transformational (rewrite existing H2s
+  in question form). The new rule requires ≥50% of body H2s (excluding
+  the literal "FAQ" label) to be in question form when applicable, with
+  example transformations cited.
+
+### Acceptance tests
+- tests/bug_19_trust_block_reviewer_promotion_test.md (Lane K)
+- tests/bug_20_internal_source_subdomain_test.md (Lane K)
+- tests/bug_21_question_h2_enforcement_test.md (Lane L)
+
+### Origin
+v0.6.4 verification smoke `2026-04-26T10-13-57`. Spec at
+`specs/2026-04-26-bugs-iteration8.md`. Validation contract drift surfaced
+during Marco's diagnostic review of v0.6.4 smoke YELLOW.
+
 ## [0.6.4] — 2026-04-26
 
 Iteration 7 single-bug pre-emptive fix from Codex GPT-5.5 static audit
