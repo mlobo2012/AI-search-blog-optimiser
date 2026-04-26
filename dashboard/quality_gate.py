@@ -75,6 +75,7 @@ QUESTION_HEADING_WORD_RE = re.compile(
     r"^(which|how|what|why|when|where|who|can|does|is|are|should)\b",
     re.IGNORECASE,
 )
+REC_NON_APPLICABLE_REASONS = {"non-applicable", "deferred", "out-of-scope"}
 
 
 def _coerce_json_payload(value: Any) -> Any:
@@ -644,12 +645,15 @@ def _validate_rec_implementation(manifest: dict, recommendations: dict) -> list[
                 issues.append(f"{rec_id} has no valid implementation entry")
             continue
         if implemented is False:
-            reason = str(entry.get("reason") or "").strip()
-            if reason in {"non-applicable", "data_missing"}:
+            raw_reason = str(entry.get("reason") or "").strip()
+            if not raw_reason:
+                issues.append(f"{rec_id} has non-implemented entry without required reason")
                 continue
-            if reason.startswith("superseded_by_") and len(reason) > len("superseded_by_"):
+            normalized_reason = raw_reason.lower().replace("_", "-")
+            if normalized_reason in REC_NON_APPLICABLE_REASONS:
                 continue
-            issues.append(f"{rec_id} has no valid implementation entry")
+            allowed = ", ".join(sorted(REC_NON_APPLICABLE_REASONS))
+            issues.append(f"{rec_id} has unsupported non-implemented reason '{raw_reason}' (allowed: {allowed})")
             continue
         issues.append(f"{rec_id} has no valid implementation entry")
     return issues
