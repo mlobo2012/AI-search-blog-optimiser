@@ -789,8 +789,40 @@ def _validate_author(
     return result
 
 
+def _reviewer_display_name(reviewer: dict[str, Any]) -> str:
+    return str(
+        reviewer.get("display_name")
+        or reviewer.get("name")
+        or reviewer.get("full_name")
+        or ""
+    ).strip()
+
+
+def _reviewer_display_role(reviewer: dict[str, Any]) -> str:
+    return str(reviewer.get("display_role") or reviewer.get("role") or "").strip()
+
+
+def _strong_reviewer_from(reviewers: list[dict[str, Any]]) -> dict[str, str] | None:
+    for reviewer in reviewers:
+        if not isinstance(reviewer, dict):
+            continue
+        if reviewer.get("active", True) is not True:
+            continue
+        display_name = _reviewer_display_name(reviewer)
+        display_role = _reviewer_display_role(reviewer)
+        if not _has_first_and_last_name(display_name):
+            continue
+        if not display_role or not _role_is_reviewer_relevant(display_role):
+            continue
+        return {
+            "id": str(reviewer.get("id") or "").strip(),
+            "display_name": display_name,
+            "display_role": display_role,
+        }
+    return None
+
+
 def _validate_trust_block(author_validation: dict[str, Any], reviewers: list[dict[str, Any]]) -> dict[str, Any]:
-    reviewer_id = author_validation.get("reviewer_id")
     author_passed = author_validation.get("status") == "passed"
     display_name = str(author_validation.get("display_name") or "").strip()
     if author_passed and display_name:
@@ -798,6 +830,27 @@ def _validate_trust_block(author_validation: dict[str, Any], reviewers: list[dic
             "passed": True,
             "source": "author_validation",
             "author_name": display_name,
+        }
+    promoted_reviewer = _strong_reviewer_from(reviewers)
+    if promoted_reviewer:
+        source_author_name = display_name or "source author"
+        weak_role = str(author_validation.get("display_role") or "").strip() or "unknown role"
+        author_validation.update({
+            "status": "passed",
+            "display_name": promoted_reviewer["display_name"],
+            "display_role": promoted_reviewer["display_role"],
+            "reviewer_id": promoted_reviewer["id"] or None,
+            "source": "reviewers_promoted",
+            "detail": (
+                f"{source_author_name} rejected as {weak_role}; reviewer "
+                f"{promoted_reviewer['display_name']} ({promoted_reviewer['display_role']}) "
+                "promoted from reviewers.json."
+            ),
+        })
+        return {
+            "passed": True,
+            "source": "reviewers_json",
+            "author_name": promoted_reviewer["display_name"],
         }
     return {
         "passed": False,
