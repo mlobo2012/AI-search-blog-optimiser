@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,7 @@ SCOPE_DRIFT_STOPWORDS = {
     "have", "into", "its", "just", "more", "over", "that", "than", "their", "there",
     "they", "this", "what", "when", "where", "which", "with", "your",
 }
+SHORT_TOPIC_TOKENS = {"api", "crm", "mcp", "sso"}
 QUESTION_HEADING_WORD_RE = re.compile(
     r"^(which|how|what|why|when|where|who|can|does|is|are|should)\b",
     re.IGNORECASE,
@@ -81,6 +83,59 @@ VISIBLE_REVIEWER_PREFIX_RE = re.compile(
 )
 VISIBLE_BYLINE_PREFIX_RE = re.compile(r"^by\s+", re.IGNORECASE)
 REC_NON_APPLICABLE_REASONS = {"non-applicable", "deferred", "out-of-scope"}
+VISIBLE_META_LANGUAGE_PATTERNS = {
+    r"\bthe article should\b": "the article should",
+    r"\bthis rewrite\b": "this rewrite",
+    r"\bthe optimi[sz]ed page\b": "the optimized page",
+    r"\bthis optimi[sz]ed page\b": "this optimized page",
+    r"\bpeec showed\b": "Peec showed",
+    r"\brecommendations?\b": "recommendation",
+    r"\barticle package\b": "article package",
+}
+OFF_PAGE_RECOMMENDATION_CATEGORIES = {"off_page", "source_displacement"}
+KNOWN_ENTITY_OR_WORKFLOW_TERMS = {
+    "api",
+    "asana",
+    "chatgpt",
+    "claude",
+    "crm",
+    "cursor",
+    "gdpr",
+    "gmail",
+    "google",
+    "google meet",
+    "hipaa",
+    "hubspot",
+    "jira",
+    "linear",
+    "mcp",
+    "microsoft",
+    "notion",
+    "outlook",
+    "salesforce",
+    "saml",
+    "slack",
+    "soc 2",
+    "sso",
+    "zapier",
+    "zoom",
+}
+VISIBLE_ENTITY_ALLOWLIST = {
+    "answer",
+    "blog",
+    "blogposting",
+    "breadcrumblist",
+    "ceo",
+    "faq",
+    "faqpage",
+    "home",
+    "organization",
+    "person",
+    "tl",
+    "tldr",
+}
+ENTITY_PREFIX_STOPWORDS = {"a", "an", "faq", "the"}
+QUESTION_ENTITY_STOPWORDS = {"can", "do", "does", "how", "is", "should", "what", "when", "where", "which", "who", "why"}
 
 
 def _coerce_json_payload(value: Any) -> Any:
@@ -233,7 +288,7 @@ def _has_type(node: dict[str, Any], expected: str) -> bool:
 
 
 def _slug_tokens(value: str) -> list[str]:
-    return re.findall(r"[A-Za-z][A-Za-z'-]+", value or "")
+    return re.findall(r"[A-Za-z][A-Za-z']+", value or "")
 
 
 def _topic_tokens(*values: str) -> list[str]:
@@ -241,7 +296,7 @@ def _topic_tokens(*values: str) -> list[str]:
     for value in values:
         for token in _slug_tokens(value):
             lowered = token.lower()
-            if len(lowered) < 4 or lowered in SCOPE_DRIFT_STOPWORDS:
+            if (len(lowered) < 4 and lowered not in SHORT_TOPIC_TOKENS) or lowered in SCOPE_DRIFT_STOPWORDS:
                 continue
             tokens.append(lowered)
     return _dedupe_preserve(tokens)
@@ -666,6 +721,146 @@ def _validate_rec_implementation(manifest: dict, recommendations: dict) -> list[
             issues.append(f"{rec_id} has unsupported non-implemented reason '{raw_reason}' (allowed: {allowed})")
             continue
         issues.append(f"{rec_id} has no valid implementation entry")
+    return issues
+
+
+def _flatten_string_values(value: Any) -> list[str]:
+    strings: list[str] = []
+    if isinstance(value, str):
+        strings.append(value)
+    elif isinstance(value, dict):
+        for child in value.values():
+            strings.extend(_flatten_string_values(child))
+    elif isinstance(value, list):
+        for child in value:
+            strings.extend(_flatten_string_values(child))
+    return strings
+
+
+def _support_corpus_text(article: dict[str, Any], recommendations: dict[str, Any], evidence: dict[str, Any]) -> str:
+    chunks: list[str] = []
+    chunks.extend(_flatten_string_values({
+        "title": article.get("title"),
+        "body_md": article.get("body_md"),
+        "summary": article.get("summary"),
+        "trust": article.get("trust"),
+        "meta": article.get("meta"),
+        "links": article.get("links"),
+    }))
+    chunks.extend(_flatten_string_values(recommendations))
+    chunks.extend(_flatten_string_values(evidence))
+    return _normalize_text(" ".join(chunks)).lower()
+
+
+def _term_key(value: str) -> str:
+    return _normalize_text(re.sub(r"[^a-z0-9]+", " ", (value or "").lower()))
+
+
+def _term_is_supported(candidate: str, support_text: str) -> bool:
+    candidate_key = _term_key(candidate)
+    if not candidate_key:
+        return False
+    support_key = _term_key(support_text)
+    return bool(re.search(rf"\b{re.escape(candidate_key)}\b", support_key))
+
+
+def _date_is_visible(date_value: Any, visible_text: str) -> bool:
+    raw = str(date_value or "").strip()
+    if not raw:
+        return False
+    if raw in visible_text:
+        return True
+    iso_date = raw[:10]
+    try:
+        parsed = datetime.fromisoformat(iso_date)
+    except ValueError:
+        return False
+    month = parsed.strftime("%B")
+    short_month = parsed.strftime("%b")
+    candidates = {
+        f"{month} {parsed.day}, {parsed.year}",
+        f"{short_month} {parsed.day}, {parsed.year}",
+        f"{parsed.day} {month} {parsed.year}",
+        f"{parsed.day} {short_month} {parsed.year}",
+    }
+    return any(candidate in visible_text for candidate in candidates)
+
+
+def _visible_meta_language_issues(snapshot: HTMLSnapshot) -> list[str]:
+    visible = _normalize_text(snapshot.visible_text).lower()
+    issues: list[str] = []
+    for pattern, phrase in VISIBLE_META_LANGUAGE_PATTERNS.items():
+        if re.search(pattern, visible, re.IGNORECASE):
+            issues.append(f"Visible draft contains advisory/meta language: {phrase}.")
+    return issues
+
+
+def _candidate_visible_entities(visible_text: str) -> list[str]:
+    candidates: list[str] = []
+    normalized_visible = _normalize_text(visible_text)
+    lowered_visible = normalized_visible.lower()
+    for term in KNOWN_ENTITY_OR_WORKFLOW_TERMS:
+        if re.search(rf"\b{re.escape(term)}\b", lowered_visible, re.IGNORECASE):
+            candidates.append(term)
+    return _dedupe_preserve(candidates)
+
+
+def _source_grounding_issues(
+    article: dict[str, Any],
+    recommendations: dict[str, Any],
+    evidence: dict[str, Any],
+    snapshot: HTMLSnapshot,
+) -> tuple[list[str], list[str]]:
+    support_text = _support_corpus_text(article, recommendations, evidence)
+    unsupported: list[str] = []
+    for candidate in _candidate_visible_entities(snapshot.visible_text):
+        if candidate in VISIBLE_ENTITY_ALLOWLIST:
+            continue
+        if _term_is_supported(candidate, support_text):
+            continue
+        unsupported.append(candidate)
+
+    issues: list[str] = []
+    if unsupported:
+        preview = ", ".join(unsupported[:5])
+        issues.append(f"Visible draft adds unsupported entities or workflows not present in the source article, recommendations, or evidence pack: {preview}.")
+    return issues, unsupported
+
+
+def _off_page_recommendation_issues(
+    snapshot: HTMLSnapshot,
+    manifest: dict,
+    recommendations: dict,
+) -> list[str]:
+    recs = recommendations.get("recommendations")
+    if not isinstance(recs, list):
+        return []
+    rec_map = manifest.get("rec_implementation_map")
+    if not isinstance(rec_map, dict):
+        rec_map = {}
+    visible = _normalize_text(snapshot.visible_text).lower()
+    issues: list[str] = []
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        category = str(rec.get("category") or "").strip().lower()
+        if category not in OFF_PAGE_RECOMMENDATION_CATEGORIES:
+            continue
+        rec_id = str(rec.get("id") or "").strip() or "off-page recommendation"
+        entry = rec_map.get(rec_id)
+        reason = ""
+        if isinstance(entry, dict):
+            reason = str(entry.get("reason") or "").strip().lower().replace("_", "-")
+        if not isinstance(entry, dict) or entry.get("implemented") is not False or reason != "non-applicable":
+            issues.append(f"{rec_id} is off-page-only and must be marked non-applicable instead of implemented in visible HTML.")
+
+        title = _normalize_text(str(rec.get("title") or ""))
+        if len(title) >= 12 and title.lower() in visible:
+            issues.append(f"{rec_id} off-page recommendation appears in visible draft copy.")
+            continue
+        description = _normalize_text(str(rec.get("description") or rec.get("action") or ""))
+        if len(description) >= 40 and description[:80].lower() in visible:
+            issues.append(f"{rec_id} off-page recommendation appears in visible draft copy.")
     return issues
 
 
@@ -1133,7 +1328,7 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
 
     module_status = {
         "tldr_block": "tl;dr" in snapshot.visible_text.lower(),
-        "trust_block": author_validation["status"] == "passed" and any(date_value in snapshot.visible_text for date_value in [
+        "trust_block": author_validation["status"] == "passed" and any(_date_is_visible(date_value, snapshot.visible_text) for date_value in [
             str(((article.get("trust") or {}).get("published_at")) or ""),
             str(((article.get("trust") or {}).get("updated_at")) or ""),
         ]),
@@ -1204,6 +1399,12 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
         blocking_issues.extend(schema_notes)
     rec_implementation_issues = _validate_rec_implementation(existing_manifest, recommendations)
     blocking_issues.extend(rec_implementation_issues)
+    visible_meta_issues = _visible_meta_language_issues(snapshot)
+    grounding_issues, unsupported_visible_entities = _source_grounding_issues(article, recommendations, evidence, snapshot)
+    off_page_issues = _off_page_recommendation_issues(snapshot, existing_manifest, recommendations)
+    blocking_issues.extend(visible_meta_issues)
+    blocking_issues.extend(grounding_issues)
+    blocking_issues.extend(off_page_issues)
 
     quality_status = "passed" if not blocking_issues and not missing_required_modules else "failed"
     passed_modules = sorted(key for key, value in module_status.items() if value)
@@ -1259,6 +1460,15 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
         "author_validation": author_validation,
         "trust_block": trust_block,
         "scope_drift": scope_drift,
+        "reader_safety": {
+            "visible_meta_language_issues": visible_meta_issues,
+            "off_page_issues": off_page_issues,
+        },
+        "source_grounding": {
+            "status": "passed" if not grounding_issues else "failed",
+            "unsupported_visible_entities": unsupported_visible_entities,
+            "issues": grounding_issues,
+        },
         "inline_evidence_count": inline_evidence_count,
         "internal_source_count": internal_source_count,
         "external_source_count": external_source_count,

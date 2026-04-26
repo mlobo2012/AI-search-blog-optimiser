@@ -218,7 +218,7 @@
                               </div>
                               <div class="rounded-xl border border-gray-200 bg-white p-4">
                                 <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Evidence mode</p>
-                                <p class="mt-2 text-sm font-medium text-gray-900 capitalize" x-text="recommendations?.mode || 'voice-rubric'"></p>
+                                <p class="mt-2 text-sm font-medium text-gray-900 capitalize" x-text="recommendations?.mode || 'pending'"></p>
                               </div>
                             </div>
 
@@ -380,7 +380,7 @@ function dashboard() {
       const pipeline = this.state?.pipeline || {};
       return [
         {key: 'prereqs', label: 'Prereqs', status: pipeline.prereqs?.status || 'pending', detail: pipeline.prereqs?.detail || ''},
-        {key: 'crawl', label: 'Crawl', status: pipeline.crawl?.status || 'pending', detail: pipeline.crawl?.detail || (pipeline.crawl?.article_count ? `${pipeline.crawl.article_count} articles` : '')},
+        {key: 'crawl', label: 'Crawl', status: pipeline.crawl?.status || 'pending', detail: this.crawlStageDetail(pipeline.crawl)},
         {key: 'voice', label: 'Voice', status: pipeline.voice?.status || 'pending', detail: pipeline.voice?.detail || ''},
         {key: 'analysis', label: 'Analysis', status: pipeline.analysis?.status || 'pending', detail: pipeline.analysis?.detail || (pipeline.analysis?.gap_count ? `${pipeline.analysis.gap_count} gaps` : '')},
         {key: 'evidence', label: 'Evidence', status: pipeline.evidence?.status || 'pending', detail: this.aggregateProgress(pipeline.evidence)},
@@ -394,6 +394,13 @@ function dashboard() {
       if (stage.completed_articles != null) return `${stage.completed_articles}/${stage.total || 0}`;
       if (stage.count != null) return `${stage.count}`;
       return '';
+    },
+
+    crawlStageDetail(stage) {
+      const backend = stage?.backend || this.state?.crawl_backend?.selected || '';
+      const label = backend === 'firecrawl' ? 'Firecrawl' : (backend === 'crawl4ai' ? 'Crawl4AI' : '');
+      const detail = stage?.detail || (stage?.article_count ? `${stage.article_count} articles` : '');
+      return [label, detail].filter(Boolean).join(' · ');
     },
 
     voiceArtefact() {

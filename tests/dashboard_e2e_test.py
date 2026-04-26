@@ -150,16 +150,17 @@ class DashboardE2ETest(unittest.TestCase):
         ]
         (site_dir / "reviewers.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    def _sample_article_record(self, slug: str = "sample-post", title: str = "Sample Post") -> dict:
+    def _sample_article_record(self, slug: str = "sample-post", title: str = "Sample Post", url: str | None = None) -> dict:
+        article_url = url or f"https://www.granola.ai/blog/{slug}"
         return {
             "slug": slug,
-            "url": f"https://www.granola.ai/blog/{slug}",
+            "url": article_url,
             "fetched_at": "2026-04-23T18:09:38Z",
             "title": title,
             "meta": {
                 "title": title,
                 "description": "Sample description",
-                "canonical": f"https://www.granola.ai/blog/{slug}",
+                "canonical": article_url,
                 "og": {"title": title, "description": "", "image": "", "type": "article"},
                 "twitter": {"card": "summary_large_image", "title": title, "description": "", "image": ""},
                 "robots": "follow, index",
@@ -587,6 +588,74 @@ class DashboardE2ETest(unittest.TestCase):
         self.assertTrue(result["is_error"])
         self.assertIn("peec_project_id is required", result["payload"])
 
+    def test_exact_article_urls_are_stored_ordered_and_required(self) -> None:
+        requested = [
+            "https://www.granola.ai/blog/granola-mcp",
+            "https://www.granola.ai/blog/sign-in-with-microsoft",
+        ]
+        run = self.harness.call_tool(4_2, "register_run", {
+            "blog_url": "https://www.granola.ai/blog",
+            "article_urls": requested,
+            "crawl_backend": "firecrawl",
+            "crawl_mcp_server": "firecrawl",
+        })["payload"]
+        self.assertEqual(run["article_urls"], requested)
+        self.assertEqual(run["crawl_backend"], "firecrawl")
+        self.assertEqual(run["crawl_mcp_server"], "firecrawl")
+        state = json.loads(pathlib.Path(run["state_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(state["article_selection"]["mode"], "exact")
+        self.assertEqual(state["requested_article_urls"], requested)
+        self.assertEqual(state["crawl_backend"]["selected"], "firecrawl")
+        self.assertEqual(state["pipeline"]["crawl"]["backend"], "firecrawl")
+
+        self.harness.call_tool(4_3, "record_crawl_discovery", {
+            "run_id": run["run_id"],
+            "discovered_count": 2,
+        })
+        self.harness.call_tool(4_4, "record_crawled_article", {
+            "run_id": run["run_id"],
+            "article": self._sample_article_record("sign-in-with-microsoft", "Sign in with Microsoft", requested[1]),
+        })
+        self.harness.call_tool(4_5, "record_crawled_article", {
+            "run_id": run["run_id"],
+            "article": self._sample_article_record("granola-mcp", "Granola MCP", requested[0]),
+        })
+        result = self.harness.call_tool(4_6, "finalize_crawl", {
+            "run_id": run["run_id"],
+        })["payload"]
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["article_slugs"], ["granola-mcp", "sign-in-with-microsoft"])
+        state = json.loads(pathlib.Path(run["state_path"]).read_text(encoding="utf-8"))
+        self.assertEqual([item["slug"] for item in state["articles"]], ["granola-mcp", "sign-in-with-microsoft"])
+
+        missing_run = self.harness.call_tool(4_7, "register_run", {
+            "blog_url": "https://www.granola.ai/blog",
+            "article_urls": requested,
+        })["payload"]
+        self.harness.call_tool(4_8, "record_crawl_discovery", {
+            "run_id": missing_run["run_id"],
+            "discovered_count": 2,
+        })
+        self.harness.call_tool(4_9, "record_crawled_article", {
+            "run_id": missing_run["run_id"],
+            "article": self._sample_article_record("granola-mcp", "Granola MCP", requested[0]),
+        })
+        missing_result = self.harness.call_tool(4_10, "finalize_crawl", {
+            "run_id": missing_run["run_id"],
+        })["payload"]
+        self.assertEqual(missing_result["status"], "failed")
+        self.assertEqual(missing_result["missing_requested_urls"], [requested[1]])
+        state = json.loads(pathlib.Path(missing_run["state_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["pipeline"]["crawl"]["status"], "failed")
+
+        extra_result = self.harness.call_tool(4_11, "record_crawled_article", {
+            "run_id": run["run_id"],
+            "article": self._sample_article_record("unexpected-post", "Unexpected Post", "https://www.granola.ai/blog/unexpected-post"),
+        })
+        self.assertTrue(extra_result["is_error"])
+        self.assertIn("was not requested", extra_result["payload"])
+
     def test_artifact_tools_persist_article_json_on_host(self) -> None:
         run = self.harness.call_tool(40, "register_run", {
             "blog_url": "https://www.granola.ai/blog",
@@ -915,14 +984,73 @@ class DashboardE2ETest(unittest.TestCase):
                 "word_count": 1234,
             },
             "audit": {"score_before": 22, "score_target": 34, "score_max": 40},
+            "category_lens": {"summary": "Voice-rubric fixture.", "topic_cluster": "workflow"},
+            "brand_lens": {"summary": "Voice-rubric fixture.", "visibility_per_engine": {}},
+            "competition_lens": {"summary": "Voice-rubric fixture.", "by_classification": {}, "strategy_implication": "Improve owned article."},
+            "engine_gap_strategy": {},
+            "primary_gaps": [],
+            "summary": {
+                "preset": "announcement_update",
+                "audit_before": 22,
+                "audit_target": 34,
+                "audit_max": 40,
+                "primary_geo_gap": "Missing answer-ready structure.",
+                "engine_weakness": "general",
+                "top_competitors_to_displace": [],
+                "highest_leverage_action": "Add answer-ready sections.",
+            },
             "matched_prompts": [{"prompt_text": "One"}],
             "recommendation_count": 4,
             "critical_count": 2,
             "recommendations": [
-                {"title": "One", "required": True},
-                {"title": "Two", "severity": "critical"},
-                {"title": "Three"},
-                {"title": "Four"},
+                {
+                    "id": "rec-001",
+                    "source": "llm",
+                    "category": "content_gap",
+                    "severity": "critical",
+                    "priority": "critical",
+                    "title": "One",
+                    "signal_types": ["prompt_visibility"],
+                    "evidence": ["voice_fixture"],
+                    "target_engines": ["chatgpt-scraper"],
+                    "per_engine_lift": {"chatgpt-scraper": "Better answer coverage."},
+                },
+                {
+                    "id": "rec-002",
+                    "source": "llm",
+                    "category": "engine_specific",
+                    "severity": "critical",
+                    "priority": "critical",
+                    "title": "Two",
+                    "signal_types": ["engine_pattern_asymmetry"],
+                    "evidence": ["voice_fixture"],
+                    "target_engines": ["perplexity-scraper"],
+                    "per_engine_lift": {"perplexity-scraper": "Clearer citations."},
+                },
+                {
+                    "id": "rec-003",
+                    "source": "llm",
+                    "category": "content_gap",
+                    "severity": "medium",
+                    "priority": "medium",
+                    "title": "Three",
+                    "signal_types": ["gap_chat_excerpt"],
+                    "evidence": ["voice_fixture"],
+                    "target_engines": ["google-ai-overview-scraper"],
+                    "per_engine_lift": {"google-ai-overview-scraper": "Preserve coverage."},
+                },
+                {
+                    "id": "rec-004",
+                    "source": "llm",
+                    "category": "content_gap",
+                    "severity": "medium",
+                    "priority": "medium",
+                    "title": "Four",
+                    "signal_types": ["retrieval_rate"],
+                    "evidence": ["voice_fixture"],
+                    "target_engines": ["chatgpt-scraper"],
+                    "per_engine_lift": {"chatgpt-scraper": "More retrievable chunks."},
+                },
             ],
         }
         result = self.harness.call_tool(48_3_6, "record_recommendations", {
@@ -937,6 +1065,84 @@ class DashboardE2ETest(unittest.TestCase):
         self.assertEqual(article["stages"]["recommendations"]["score_target"], 34)
         self.assertEqual(article["stages"]["recommendations"]["critical_count"], 2)
 
+    def test_record_recommendations_backfills_prompt_ids_from_evidence_refs(self) -> None:
+        run = self.harness.call_tool(48_3_6_1, "register_run", {
+            "blog_url": "https://www.granola.ai/blog",
+        })["payload"]
+        self.harness.call_tool(48_3_6_2, "record_crawled_article", {
+            "run_id": run["run_id"],
+            "article": self._sample_article_record("peec-rec-post", "Peec Recommendation Post"),
+        })
+        prompt_ids = [
+            "pr_11111111-1111-1111-1111-111111111111",
+            "pr_22222222-2222-2222-2222-222222222222",
+            "pr_33333333-3333-3333-3333-333333333333",
+        ]
+        self.harness.call_tool(48_3_6_3, "record_peec_gap", {
+            "run_id": run["run_id"],
+            "article_slug": "peec-rec-post",
+            "gap": {
+                "article_slug": "peec-rec-post",
+                "admissible": True,
+                "matched_prompts": [{"prompt_id": prompt_id, "prompt_text": f"Prompt {index}"} for index, prompt_id in enumerate(prompt_ids, 1)],
+            },
+        })
+        recommendations = {
+            "article_slug": "peec-rec-post",
+            "mode": "peec-prompt-matched",
+            "audit": {"score_before": 22, "score_target": 34, "score_max": 40},
+            "category_lens": {"summary": "Fixture."},
+            "brand_lens": {"summary": "Fixture."},
+            "competition_lens": {"summary": "Fixture."},
+            "engine_gap_strategy": {},
+            "primary_gaps": [],
+            "summary": {"highest_leverage_action": "Fixture."},
+            "recommendations": [
+                {
+                    "id": "rec-001",
+                    "source": "llm",
+                    "category": "content_gap",
+                    "severity": "critical",
+                    "priority": "critical",
+                    "signal_types": ["prompt_visibility"],
+                    "evidence": [f"peec_prompt_{prompt_id}" for prompt_id in prompt_ids],
+                    "target_engines": ["chatgpt-scraper"],
+                    "per_engine_lift": {"chatgpt-scraper": "Fixture."},
+                },
+                {
+                    "id": "rec-002",
+                    "source": "llm",
+                    "category": "engine_specific",
+                    "severity": "high",
+                    "priority": "high",
+                    "signal_types": ["engine_pattern_asymmetry"],
+                    "evidence": [f"peec_prompt_{prompt_id}" for prompt_id in prompt_ids],
+                    "target_engines": ["perplexity-scraper"],
+                    "per_engine_lift": {"perplexity-scraper": "Fixture."},
+                },
+                {
+                    "id": "rec-003",
+                    "source": "llm",
+                    "category": "content_gap",
+                    "severity": "medium",
+                    "priority": "medium",
+                    "signal_types": ["retrieval_rate"],
+                    "evidence": [f"peec_prompt_{prompt_id}" for prompt_id in prompt_ids],
+                    "target_engines": ["google-ai-overview-scraper"],
+                    "per_engine_lift": {"google-ai-overview-scraper": "Fixture."},
+                },
+            ],
+        }
+        result = self.harness.call_tool(48_3_6_4, "record_recommendations", {
+            "run_id": run["run_id"],
+            "article_slug": "peec-rec-post",
+            "recommendations": recommendations,
+        })["payload"]
+        self.assertEqual(result["recommendation_count"], 3)
+        artifact = json.loads(pathlib.Path(run["recommendations_dir"], "peec-rec-post.json").read_text(encoding="utf-8"))
+        for item in artifact["recommendations"]:
+            self.assertEqual(item["addresses_prompts"], prompt_ids)
+
     def test_record_recommendations_rejects_wrong_count(self) -> None:
         run = self.harness.call_tool(48_3_7, "register_run", {
             "blog_url": "https://www.granola.ai/blog",
@@ -946,11 +1152,31 @@ class DashboardE2ETest(unittest.TestCase):
             "article_slug": "bad-rec-post",
             "recommendations": {
                 "article_slug": "bad-rec-post",
-                "recommendations": [{"title": "One"}, {"title": "Two"}, {"title": "Three"}],
+                "mode": "voice-rubric",
+                "audit": {"score_before": 20, "score_target": 32, "score_max": 40},
+                "category_lens": {"summary": "Fixture."},
+                "brand_lens": {"summary": "Fixture."},
+                "competition_lens": {"summary": "Fixture."},
+                "engine_gap_strategy": {},
+                "primary_gaps": [],
+                "summary": {"highest_leverage_action": "Fixture."},
+                "recommendations": [
+                    {
+                        "id": "rec-001",
+                        "source": "llm",
+                        "category": "content_gap",
+                        "severity": "critical",
+                        "priority": "critical",
+                        "signal_types": ["prompt_visibility"],
+                        "evidence": ["fixture"],
+                        "target_engines": ["chatgpt-scraper"],
+                        "per_engine_lift": {"chatgpt-scraper": "Fixture."},
+                    }
+                ],
             },
         })
         self.assertTrue(result["is_error"])
-        self.assertIn("exactly 4 items", result["payload"])
+        self.assertIn("LLM-source recommendation count", result["payload"])
 
     def test_read_bundle_text_reads_plugin_scoped_references(self) -> None:
         contract = self.harness.call_tool(48_4, "read_bundle_text", {
@@ -1275,6 +1501,9 @@ class DashboardE2ETest(unittest.TestCase):
         })["payload"]
         self.assertEqual(result["quality_gate_status"], "passed")
         self.assertEqual(result["manifest"]["quality_gate"]["status"], "passed")
+        stored_html = pathlib.Path(run["optimised_dir"], "workflow-package.html").read_text(encoding="utf-8")
+        self.assertIn("data-blog-optimiser-article-style", stored_html)
+        self.assertIn("border-left: 5px solid var(--bo-accent)", stored_html)
 
     def test_validate_article_recovers_from_stringified_json_artifacts(self) -> None:
         run = self.harness.call_tool(58_1_1, "register_run", {
@@ -1356,6 +1585,117 @@ class DashboardE2ETest(unittest.TestCase):
         self.assertEqual(result["scope_drift"]["status"], "failed")
         self.assertIn("pivot away", result["scope_drift"]["detail"])
 
+    def test_validate_article_blocks_visible_advisory_meta_language(self) -> None:
+        run = self.harness.call_tool(58_4_2_1, "register_run", {
+            "blog_url": "https://www.granola.ai/blog",
+        })["payload"]
+        self._seed_reviewers("granola.ai")
+        self._write_validator_fixture(run, slug="workflow-meta-language", selected_reviewer=True)
+        html_path = pathlib.Path(run["optimised_dir"], "workflow-meta-language.html")
+        html_path.write_text(
+            html_path.read_text(encoding="utf-8").replace(
+                "<p>The <a href=\"https://help.zapier.com",
+                "<p>This rewrite follows the recommendation for AI search.</p>\n"
+                "      <p>The <a href=\"https://help.zapier.com",
+            ),
+            encoding="utf-8",
+        )
+        result = self.harness.call_tool(58_4_2_2, "validate_article", {
+            "run_id": run["run_id"],
+            "article_slug": "workflow-meta-language",
+            "audit_after": 34,
+        })["payload"]
+        self.assertEqual(result["quality_gate"]["status"], "failed")
+        issues = "\n".join(result["reader_safety"]["visible_meta_language_issues"])
+        self.assertIn("this rewrite", issues)
+        self.assertIn("recommendation", issues)
+
+    def test_validate_article_blocks_unsupported_added_workflow_entity(self) -> None:
+        run = self.harness.call_tool(58_4_2_3, "register_run", {
+            "blog_url": "https://www.granola.ai/blog",
+        })["payload"]
+        self._seed_reviewers("granola.ai")
+        self._write_validator_fixture(run, slug="workflow-unsupported-entity", selected_reviewer=True)
+        html_path = pathlib.Path(run["optimised_dir"], "workflow-unsupported-entity.html")
+        html_path.write_text(
+            html_path.read_text(encoding="utf-8").replace(
+                "<h2>Why does the evidence matter?</h2>",
+                "<p>Teams can sync Salesforce pipeline updates from Slack approvals after each meeting.</p>\n"
+                "      <h2>Why does the evidence matter?</h2>",
+            ),
+            encoding="utf-8",
+        )
+        result = self.harness.call_tool(58_4_2_4, "validate_article", {
+            "run_id": run["run_id"],
+            "article_slug": "workflow-unsupported-entity",
+            "audit_after": 34,
+        })["payload"]
+        self.assertEqual(result["quality_gate"]["status"], "failed")
+        self.assertEqual(result["source_grounding"]["status"], "failed")
+        self.assertIn("salesforce", result["source_grounding"]["unsupported_visible_entities"])
+        self.assertIn("slack", result["source_grounding"]["unsupported_visible_entities"])
+
+    def test_validate_article_passes_conservative_source_grounded_rewrite(self) -> None:
+        run = self.harness.call_tool(58_4_2_5, "register_run", {
+            "blog_url": "https://www.granola.ai/blog",
+        })["payload"]
+        self._seed_reviewers("granola.ai")
+        self._write_validator_fixture(run, slug="workflow-source-grounded", selected_reviewer=True)
+        result = self.harness.call_tool(58_4_2_6, "validate_article", {
+            "run_id": run["run_id"],
+            "article_slug": "workflow-source-grounded",
+            "audit_after": 34,
+        })["payload"]
+        self.assertEqual(result["quality_gate"]["status"], "passed")
+        self.assertEqual(result["source_grounding"]["status"], "passed")
+        self.assertEqual(result["reader_safety"]["visible_meta_language_issues"], [])
+
+    def test_off_page_recommendations_stay_out_of_visible_html(self) -> None:
+        run = self.harness.call_tool(58_4_2_7, "register_run", {
+            "blog_url": "https://www.granola.ai/blog",
+        })["payload"]
+        self._seed_reviewers("granola.ai")
+        self._write_validator_fixture(run, slug="workflow-off-page", selected_reviewer=True)
+        recommendations_path = pathlib.Path(run["recommendations_dir"], "workflow-off-page.json")
+        recommendations = json.loads(recommendations_path.read_text(encoding="utf-8"))
+        recommendations["recommendations"].append({
+            "id": "rec-off-1",
+            "source": "llm",
+            "category": "off_page",
+            "priority": "critical",
+            "title": "Contact AutoPedia for YouTube collaboration",
+            "description": "Contact AutoPedia and ask for a collaboration on YouTube.",
+        })
+        recommendations_path.write_text(json.dumps(recommendations, indent=2), encoding="utf-8")
+        manifest_path = pathlib.Path(run["optimised_dir"], "workflow-off-page.manifest.json")
+        manifest_path.write_text(json.dumps({
+            "rec_implementation_map": {
+                "rec-off-1": {"implemented": False, "reason": "non-applicable"}
+            }
+        }), encoding="utf-8")
+        passing = self.harness.call_tool(58_4_2_8, "validate_article", {
+            "run_id": run["run_id"],
+            "article_slug": "workflow-off-page",
+            "audit_after": 34,
+        })["payload"]
+        self.assertEqual(passing["quality_gate"]["status"], "passed")
+
+        html_path = pathlib.Path(run["optimised_dir"], "workflow-off-page.html")
+        html_path.write_text(
+            html_path.read_text(encoding="utf-8").replace(
+                "</article>",
+                "<p>Contact AutoPedia for YouTube collaboration.</p>\n    </article>",
+            ),
+            encoding="utf-8",
+        )
+        failing = self.harness.call_tool(58_4_2_9, "validate_article", {
+            "run_id": run["run_id"],
+            "article_slug": "workflow-off-page",
+            "audit_after": 34,
+        })["payload"]
+        self.assertEqual(failing["quality_gate"]["status"], "failed")
+        self.assertIn("off-page recommendation appears", "\n".join(failing["reader_safety"]["off_page_issues"]))
+
     def test_finalize_run_report_writes_summary_from_disk_truth(self) -> None:
         run = self.harness.call_tool(58_4_3, "register_run", {
             "blog_url": "https://www.granola.ai/blog",
@@ -1399,6 +1739,7 @@ class DashboardE2ETest(unittest.TestCase):
         self.assertIn("Draft visibility is driven by the dashboard validator output", command)
         self.assertIn("allowed-tools: \"*\"", command)
         self.assertIn("Do not assume the Peec MCP server is literally named `peec`", command)
+        self.assertIn("Do not assume the Firecrawl MCP server is literally named `firecrawl`", command)
         self.assertIn("Use `ToolSearch` when you need to resolve external MCP tool names dynamically", command)
         self.assertIn("draft-ready vs blocked", command)
         self.assertIn("record_crawled_article", command)
@@ -1406,12 +1747,19 @@ class DashboardE2ETest(unittest.TestCase):
         self.assertIn("record_peec_gap", command)
         self.assertIn("record_draft_package", command)
         self.assertIn("finalize_run_report", command)
+        self.assertIn("--article-url <url>", command)
+        self.assertIn("article_urls", command)
         self.assertIn("report surface only", command)
         self.assertIn("Immediately after registration, call", skill)
         self.assertIn("dashboard MCP artifact tools", skill)
+        self.assertIn("If article_urls is non-empty", skill)
+        self.assertIn("Use `ToolSearch` to discover whether a connected Firecrawl MCP is available", skill)
+        self.assertIn("crawl_backend = \"firecrawl\"", skill)
+        self.assertIn("\"crawl_backend\": \"firecrawl\"|\"crawl4ai\"", skill)
         self.assertIn("record_evidence_pack", skill)
         self.assertIn("record_recommendations", skill)
         self.assertIn("finalize_crawl", skill)
+        self.assertIn("Use articles/{article_slug}.json.body_md as the rewrite spine", skill)
         self.assertIn("Use `ToolSearch` to discover whether a connected Peec MCP is available", skill)
         self.assertIn("Do not emit \"No Peec connection\" unless you first attempted capability-based discovery via `ToolSearch`", skill)
         self.assertIn("Peec is required for this product", skill)
@@ -1427,11 +1775,16 @@ class DashboardE2ETest(unittest.TestCase):
         self.assertIn("Never use `mcp__c4ai-sse__ask` to discover article URLs", crawler)
         self.assertIn("Never use `mcp__c4ai-sse__ask` for article extraction either", crawler)
         self.assertIn("Do not escalate to `execute_js`", crawler)
-        self.assertIn("mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__get_artifact_path", crawler)
+        self.assertIn("mcp__blog-optimiser-dashboard__", crawler)
         self.assertIn("record_crawl_discovery", crawler)
         self.assertIn("record_crawled_article", crawler)
         self.assertIn("finalize_crawl", crawler)
+        self.assertIn("crawl only those URLs in the received order", crawler)
+        self.assertIn("Never assume the Firecrawl MCP server prefix is literally `firecrawl`", crawler)
+        self.assertIn("firecrawl_scrape", crawler)
+        self.assertIn("firecrawl_map", crawler)
         self.assertIn("Do not invent reviewers, claims, or sources.", evidence_builder)
+        self.assertIn("Fetch only real public source pages. If `crawl_backend` is `firecrawl`", evidence_builder)
         self.assertIn("record_evidence_pack", evidence_builder)
         self.assertIn("reviewer_candidate_id", evidence_builder)
         self.assertIn("evidence/{article_slug}.json", evidence_builder)
@@ -1456,6 +1809,9 @@ class DashboardE2ETest(unittest.TestCase):
         self.assertIn("40-point GEO audit", generator)
         self.assertIn("record_draft_package", generator)
         self.assertIn("fail_article_stage", generator)
+        self.assertIn("body_md` as the rewrite spine", generator)
+        self.assertIn("Keep the visible H1 anchored to the source title", generator)
+        self.assertIn("Off-page-only recommendations belong only in `diff_markdown` or `handoff_markdown`", generator)
         self.assertIn("controller-generated, not self-reported", generator)
         self.assertIn("anonymous, `Team`, `Staff`, or first-name-only", generator)
         self.assertIn("must_cite_claim_id", generator)
@@ -1475,8 +1831,11 @@ class DashboardE2ETest(unittest.TestCase):
         self.assertIn("references/geo-article-contract.md", recommender)
         self.assertIn("evidence/{article_slug}.json", recommender)
         self.assertIn("record_recommendations", recommender)
-        self.assertIn("Use only the top 2 matched prompts", recommender)
-        self.assertIn("recommendations` must contain exactly 4 items", recommender)
+        self.assertIn("Use all matched prompts for synthesis", recommender)
+        self.assertIn("Each recommendation object must include `addresses_prompts` directly", recommender)
+        self.assertIn("exactly 3-8 LLM-source", recommender)
+        self.assertIn("companion actions only", recommender)
+        self.assertIn("Prefer at least four article-specific", recommender)
         self.assertIn("Do not copy large excerpts", recommender)
         self.assertIn("Never mark top-level `pipeline.analysis` or `pipeline.recommendations`", recommender)
         self.assertNotIn("voice-rubric", recommender)
@@ -1495,8 +1854,17 @@ class DashboardE2ETest(unittest.TestCase):
         self.assertNotIn("Continue in Claude Cowork", html)
         self.assertNotIn("reply <code>continue</code> to resume the run", html)
         self.assertIn("label: 'Evidence'", html)
+        self.assertIn("crawlStageDetail", html)
+        self.assertIn("Firecrawl", html)
         self.assertIn("stage?.quality_gate === 'passed'", html)
         self.assertNotIn("stage?.quality_gate !== 'failed'", html)
+        self.assertIn('x-data="articleDetail(article, expanded)"', html)
+        self.assertIn("activePanel() === 'recommendations'", html)
+        self.assertIn("activePanel() === 'draft'", html)
+        self.assertIn("activePanel()", html)
+        self.assertNotIn("articleDetail(article, expanded.panel)", html)
+        self.assertNotIn("&& panel === 'recommendations'", html)
+        self.assertNotIn("&& panel === 'draft'", html)
         self.assertIn("View recommendations", html)
         self.assertIn("View draft article", html)
         self.assertIn('x-data="articleDetail(article, expanded)"', html)
@@ -1512,6 +1880,7 @@ class DashboardE2ETest(unittest.TestCase):
         self.assertIn("Open full article", html)
         self.assertIn("Open in new tab", html)
         self.assertIn("Updated at", html)
+        self.assertNotIn("voice-rubric", html)
         self.assertNotIn("View article", html)
         self.assertNotIn("View markdown", html)
         self.assertNotIn("View HTML", html)

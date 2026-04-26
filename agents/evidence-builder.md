@@ -18,16 +18,18 @@ through the dashboard MCP.
 - `evidence_dir`
 - `gaps_dir`
 - `reviewers_path`
+- `crawl_backend` (`firecrawl` or `crawl4ai`)
 
 Treat the absolute paths as host references only. Read and write real artefacts through the
 dashboard MCP.
 
 ## Required MCP tools
 
+- `ToolSearch` when `crawl_backend` is `firecrawl`
+- `ToolSearch` for dashboard tools if the first dashboard prefix is unavailable
+- discovered Firecrawl tool with capability `firecrawl_scrape`
 - `mcp__c4ai-sse__md`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__list_artifacts`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_json_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_evidence_pack`
+- dashboard MCP tools ending in `list_artifacts`, `read_json_artifact`, and `record_evidence_pack`; in Claude Code these are usually exposed as `mcp__blog-optimiser-dashboard__...`
 
 ## Required reads
 
@@ -45,7 +47,7 @@ dashboard MCP.
    - do not invent a reviewer
    - if no valid reviewer exists, leave `reviewer_candidate_id` null
 4. Read the gap artefact if it exists and use it to prioritize which external sources matter.
-5. Fetch only real public source pages with `mcp__c4ai-sse__md`.
+5. Fetch only real public source pages. If `crawl_backend` is `firecrawl`, resolve the connected Firecrawl MCP tool family via `ToolSearch` and use `firecrawl_scrape` with `formats: ["markdown"]` and `onlyMainContent: true`. Otherwise use `mcp__c4ai-sse__md`.
 6. Build the evidence payload for `evidence/{article_slug}.json` with:
    - `article_slug`
    - `mode`

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI Search Blog Optimiser — local dashboard server (v0.6.7).
+AI Search Blog Optimiser — local dashboard server (v0.7.0).
 
 Two run modes:
   - Default (MCP stdio): Claude Cowork spawns this as its MCP server. The MCP
@@ -62,7 +62,7 @@ except ImportError:
 # user-writable location. Default roots are platform-native and versioned under
 # v3. Override with BLOG_OPTIMISER_DATA_ROOT for tests/dev only.
 
-VERSION = "0.6.7"
+VERSION = "0.7.0"
 DEFAULT_GATE_TIMEOUT_SECONDS = 300
 BUNDLE_READ_ROOTS = ("references", "skills")
 JSON_STRINGISH_PREFIXES = tuple('{["-0123456789tfn')
@@ -78,6 +78,104 @@ LEGACY_DRAFT_STATUS_MAP = {
     "ready_for_review": "completed",
     "running": "running",
 }
+EXACT_ARTICLE_URL_STATE_KEYS = ("requested_article_urls", "article_urls")
+OPTIMISED_ARTICLE_STYLE_MARKER = "data-blog-optimiser-article-style"
+OPTIMISED_ARTICLE_STYLE = f"""
+<style {OPTIMISED_ARTICLE_STYLE_MARKER}="v1">
+  :root {{
+    color-scheme: light;
+    --bo-accent: #00AEEF;
+    --bo-accent-light: #E6F7FD;
+    --bo-border: #DDE2EA;
+    --bo-text: #0A0A0A;
+    --bo-muted: #526070;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0;
+    background: #fff;
+    color: var(--bo-text);
+    font-family: "Outfit", "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 18px;
+    line-height: 1.65;
+  }}
+  article {{
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 56px 40px 64px;
+  }}
+  h1 {{
+    max-width: 900px;
+    margin: 0 0 28px;
+    font-size: clamp(2.4rem, 5vw, 3.7rem);
+    line-height: 1.08;
+    letter-spacing: 0;
+  }}
+  h2 {{
+    margin: 44px 0 14px;
+    font-size: clamp(1.55rem, 3vw, 2rem);
+    line-height: 1.2;
+    letter-spacing: 0;
+  }}
+  h3 {{ margin: 28px 0 10px; font-size: 1.2rem; }}
+  p {{ margin: 0 0 20px; }}
+  a {{ color: #007FAE; text-decoration: underline; text-underline-offset: 2px; }}
+  article > p:first-of-type {{
+    margin: 0 0 34px;
+    padding: 20px 24px;
+    border-left: 5px solid var(--bo-accent);
+    background: var(--bo-accent-light);
+    font-size: 1.08rem;
+  }}
+  article > p:first-of-type strong,
+  article > p:first-of-type b {{
+    font-weight: 800;
+  }}
+  article > p:nth-of-type(2) {{
+    margin: 0 0 36px;
+    padding: 18px 22px;
+    border: 1px solid var(--bo-border);
+    border-radius: 8px;
+    background: #fff;
+  }}
+  section {{
+    margin: 0 0 34px;
+  }}
+  table {{
+    width: 100%;
+    margin: 24px 0 32px;
+    border-collapse: collapse;
+    border: 1px solid var(--bo-border);
+    font-size: 0.98rem;
+  }}
+  caption {{
+    caption-side: top;
+    margin-bottom: 10px;
+    color: var(--bo-muted);
+    font-size: 0.85rem;
+    text-align: left;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }}
+  th, td {{
+    padding: 13px 14px;
+    border: 1px solid var(--bo-border);
+    vertical-align: top;
+    text-align: left;
+  }}
+  th {{ background: #F7F7F7; font-weight: 800; }}
+  ul, ol, dl {{ margin: 14px 0 28px; }}
+  li {{ margin: 8px 0; }}
+  dt {{ margin-top: 16px; font-weight: 800; }}
+  dd {{ margin: 6px 0 14px; color: #1f2937; }}
+  @media (max-width: 700px) {{
+    body {{ font-size: 16px; }}
+    article {{ padding: 36px 22px 44px; }}
+    article > p:first-of-type,
+    article > p:nth-of-type(2) {{ padding: 16px; }}
+  }}
+</style>
+""".strip()
 
 
 def _default_data_dir() -> Path:
@@ -290,6 +388,56 @@ def _canonicalize_blog_url(blog_url: str) -> str:
         fragment="",
     )
     return urlunparse(canonical)
+
+
+def _normalize_requested_article_urls(value: Any, blog_url: str | None = None) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        raw_values = [value]
+    elif isinstance(value, list):
+        raw_values = value
+    else:
+        raise ValueError("article_urls must be an array of URL strings")
+
+    site_key = _site_key_from_blog_url(blog_url) if blog_url else ""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError("article_urls must contain non-empty URL strings")
+        canonical = _canonicalize_blog_url(raw.strip())
+        host = urlparse(canonical).hostname or ""
+        if site_key and not _is_internal_host(host, site_key):
+            raise ValueError(f"article_url is not on the blog host: {raw}")
+        if canonical in seen:
+            raise ValueError(f"Duplicate article_url: {raw}")
+        seen.add(canonical)
+        ordered.append(canonical)
+    return ordered
+
+
+def _requested_article_urls_from_state(state: dict[str, Any]) -> list[str]:
+    for key in EXACT_ARTICLE_URL_STATE_KEYS:
+        urls = state.get(key)
+        if isinstance(urls, list) and urls:
+            return [str(item) for item in urls if isinstance(item, str) and item]
+    selection = state.get("article_selection")
+    if isinstance(selection, dict):
+        urls = selection.get("requested_urls")
+        if isinstance(urls, list) and urls:
+            return [str(item) for item in urls if isinstance(item, str) and item]
+    return []
+
+
+def _canonical_article_url_from_record(article: dict[str, Any]) -> str:
+    raw_url = article.get("url")
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        return ""
+    try:
+        return _canonicalize_blog_url(raw_url.strip())
+    except ValueError:
+        return ""
 
 
 def _site_key_from_blog_url(blog_url: str) -> str:
@@ -789,6 +937,19 @@ def _render_article_preview_html(article: dict[str, Any]) -> str:
   </main>
 </body>
 </html>"""
+
+
+def _ensure_optimised_article_style(html_text: str) -> str:
+    if OPTIMISED_ARTICLE_STYLE_MARKER in html_text:
+        return html_text
+    head_close = re.search(r"</head\s*>", html_text, re.IGNORECASE)
+    if head_close:
+        return html_text[:head_close.start()] + OPTIMISED_ARTICLE_STYLE + "\n" + html_text[head_close.start():]
+    head_open = re.search(r"<head[^>]*>", html_text, re.IGNORECASE)
+    if head_open:
+        insert_at = head_open.end()
+        return html_text[:insert_at] + "\n" + OPTIMISED_ARTICLE_STYLE + html_text[insert_at:]
+    return OPTIMISED_ARTICLE_STYLE + "\n" + html_text
 
 
 def _hydrate_gates(run_dir: Path) -> dict[str, Any]:
@@ -1436,6 +1597,23 @@ MCP_TOOLS = [
                 "blog_url": {"type": "string"},
                 "peec_project_id": {"type": "string"},
                 "refresh_voice": {"type": "boolean", "default": False},
+                "article_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional exact article URLs to crawl in the supplied order.",
+                    "default": [],
+                },
+                "crawl_backend": {
+                    "type": "string",
+                    "enum": ["firecrawl", "crawl4ai"],
+                    "description": "Crawler MCP backend selected during prereqs.",
+                    "default": "crawl4ai",
+                },
+                "crawl_mcp_server": {
+                    "type": "string",
+                    "description": "Human-readable MCP server/tool family selected during prereqs.",
+                    "default": "",
+                },
             },
             "required": ["blog_url", "peec_project_id"],
         },
@@ -1986,8 +2164,12 @@ def _tool_register_run(args: dict) -> dict:
     peec_project_id = str(args.get("peec_project_id") or "").strip()
     if not peec_project_id:
         raise ValueError("peec_project_id is required for register_run")
+    requested_backend = str(args.get("crawl_backend") or "crawl4ai").strip().lower()
+    crawl_backend = requested_backend if requested_backend in {"firecrawl", "crawl4ai"} else "crawl4ai"
+    crawl_mcp_server = str(args.get("crawl_mcp_server") or "").strip()
     canonical_blog_url = _canonicalize_blog_url(blog_url)
     site_key = _site_key_from_blog_url(canonical_blog_url)
+    requested_article_urls = _normalize_requested_article_urls(args.get("article_urls"), canonical_blog_url)
     refresh_voice = bool(args.get("refresh_voice", False))
     run_id = _next_run_id()
     run_dir = RUNS_DIR / run_id
@@ -2016,12 +2198,23 @@ def _tool_register_run(args: dict) -> dict:
         "blog_url": blog_url,
         "canonical_blog_url": canonical_blog_url,
         "site_key": site_key,
+        "requested_article_urls": requested_article_urls,
+        "article_selection": {
+            "mode": "exact" if requested_article_urls else "discovery",
+            "requested_urls": requested_article_urls,
+            "requested_count": len(requested_article_urls),
+        },
         "dashboard_url": dashboard_url,
         "peec_project": {
             "id": peec_project_id,
             "mode": "peec-required",
             "status": "connected",
             "required": True,
+        },
+        "crawl_backend": {
+            "selected": crawl_backend,
+            "mcp_server": crawl_mcp_server,
+            "status": "connected",
         },
         "session": {"mode": "fresh", "launched_at": _now_iso()},
         "voice_baseline": voice_baseline,
@@ -2035,8 +2228,13 @@ def _tool_register_run(args: dict) -> dict:
         },
         "outputs": run_paths,
         "pipeline": {
-            "prereqs": {"status": "completed", "detail": "Validated before run bootstrap"},
-            "crawl": {"status": "pending"},
+            "prereqs": {
+                "status": "completed",
+                "detail": f"Validated Peec and {crawl_backend} before run bootstrap",
+                "crawl_backend": crawl_backend,
+                "crawl_mcp_server": crawl_mcp_server,
+            },
+            "crawl": {"status": "pending", "backend": crawl_backend},
             "voice": {
                 "status": "completed" if voice_baseline["will_reuse"] else "pending",
                 "detail": (
@@ -2071,7 +2269,11 @@ def _tool_register_run(args: dict) -> dict:
         "state_path": str(run_dir / "state.json"),
         "site_key": site_key,
         "canonical_blog_url": canonical_blog_url,
+        "article_urls": requested_article_urls,
+        "requested_article_urls": requested_article_urls,
         "peec_project_id": peec_project_id,
+        "crawl_backend": crawl_backend,
+        "crawl_mcp_server": crawl_mcp_server,
         "voice_baseline": voice_baseline,
         "reviewers_path": str(site_paths["reviewers_path"]),
     }
@@ -2107,6 +2309,10 @@ def _tool_record_crawl_discovery(args: dict) -> dict:
         state = _load_state(state_path)
         crawl = (state.setdefault("pipeline", {})).setdefault("crawl", {})
         crawl["discovered_count"] = discovered_count
+        requested_urls = _requested_article_urls_from_state(state)
+        if requested_urls:
+            crawl["mode"] = "exact"
+            crawl["requested_count"] = len(requested_urls)
         crawl.setdefault("status", "running")
         state["updated_at"] = _now_iso()
         _write_json(state_path, state)
@@ -2125,8 +2331,15 @@ def _tool_record_crawled_article(args: dict) -> dict:
     article_path = _output_paths(run_dir)["articles_dir"] / f"{slug}.json"
     state_path = run_dir / "state.json"
     with STATE_LOCK:
-        _write_json(article_path, article)
         state = _load_state(state_path)
+        requested_urls = _requested_article_urls_from_state(state)
+        if requested_urls:
+            article_url = _canonical_article_url_from_record(article)
+            if not article_url:
+                raise ValueError("article.url is required for exact article-url runs")
+            if article_url not in set(requested_urls):
+                raise ValueError(f"article.url was not requested for this exact crawl: {article_url}")
+        _write_json(article_path, article)
         existing = next((item for item in state.get("articles", []) if isinstance(item, dict) and item.get("slug") == slug), None)
         fragment = {"articles": [_article_state_fragment(article, existing)]}
         _deep_merge(state, fragment)
@@ -2156,6 +2369,22 @@ def _tool_finalize_crawl(args: dict) -> dict:
             if isinstance(item, dict) and isinstance(item.get("slug"), str)
         }
         records = _persisted_article_records(run_dir)
+        requested_urls = _requested_article_urls_from_state(state)
+        missing_requested_urls: list[str] = []
+        unexpected_urls: list[str] = []
+        if requested_urls:
+            records_by_url: dict[str, dict[str, Any]] = {}
+            for record in records:
+                canonical_url = _canonical_article_url_from_record(record)
+                if canonical_url in requested_urls and canonical_url not in records_by_url:
+                    records_by_url[canonical_url] = record
+                elif canonical_url:
+                    unexpected_urls.append(canonical_url)
+                else:
+                    unexpected_urls.append(str(record.get("slug") or "unknown"))
+            missing_requested_urls = [url for url in requested_urls if url not in records_by_url]
+            records = [records_by_url[url] for url in requested_urls if url in records_by_url]
+
         persisted_rows = [_article_state_fragment(record, existing_by_slug.get(record["slug"])) for record in records]
         persisted_slugs = [row["slug"] for row in persisted_rows]
         dropped_slugs = [slug for slug in existing_by_slug.keys() if slug not in set(persisted_slugs)]
@@ -2170,7 +2399,21 @@ def _tool_finalize_crawl(args: dict) -> dict:
         crawl["persisted_count"] = persisted_count
         crawl.pop("articles_found", None)
         state.pop("crawl", None)
-        if persisted_count == 0:
+        if requested_urls and (missing_requested_urls or unexpected_urls):
+            crawl["status"] = "failed"
+            crawl["mode"] = "exact"
+            crawl["requested_count"] = len(requested_urls)
+            crawl["requested_urls"] = requested_urls
+            crawl["missing_requested_urls"] = missing_requested_urls
+            crawl["unexpected_urls"] = unexpected_urls
+            detail_parts = []
+            if missing_requested_urls:
+                detail_parts.append(f"missing {len(missing_requested_urls)} requested URL(s)")
+            if unexpected_urls:
+                detail_parts.append(f"persisted {len(unexpected_urls)} unrequested URL(s)")
+            crawl["detail"] = "Exact article URL crawl failed: " + "; ".join(detail_parts) + "."
+            state["status"] = "failed"
+        elif persisted_count == 0:
             crawl["status"] = "failed"
             crawl["detail"] = (
                 f"Crawler discovered {discovered_count} articles but wrote none to disk."
@@ -2178,6 +2421,12 @@ def _tool_finalize_crawl(args: dict) -> dict:
                 else "Crawler wrote no article JSON files to disk."
             )
             state["status"] = "failed"
+        elif requested_urls:
+            crawl["status"] = "completed"
+            crawl["mode"] = "exact"
+            crawl["requested_count"] = len(requested_urls)
+            crawl["requested_urls"] = requested_urls
+            crawl["detail"] = f"{persisted_count} requested article JSON files written to disk."
         elif discovered_count is not None and persisted_count < discovered_count:
             crawl["status"] = "partial"
             crawl["detail"] = f"Crawler discovered {discovered_count} articles but only {persisted_count} JSON files were written to disk."
@@ -2194,6 +2443,8 @@ def _tool_finalize_crawl(args: dict) -> dict:
         "persisted_count": persisted_count,
         "article_slugs": persisted_slugs,
         "dropped_slugs": dropped_slugs,
+        "missing_requested_urls": missing_requested_urls,
+        "unexpected_urls": unexpected_urls,
     }
 
 
@@ -2451,6 +2702,7 @@ RECOMMENDATION_REQUIRED_TOP_LEVEL = {
 RECOMMENDATION_REQUIRED_REC_FIELDS = {"id", "source", "category", "severity", "priority", "signal_types", "evidence"}
 PEEC_RECOMMENDATION_MODES = {"peec-prompt-matched", "peec-topic-level"}
 CLAIM_SYNTHESIS_PROMPT_THRESHOLD = 3
+PROMPT_ID_RE = re.compile(r"pr_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 
 
 def _validation_list(value: Any) -> list[Any]:
@@ -2542,6 +2794,45 @@ def _editorial_dominated_prompt_count(gap: dict[str, Any]) -> int:
 
 def _prompt_id_set(value: Any) -> set[str]:
     return {str(item) for item in _validation_list(value) if str(item).strip()}
+
+
+def _ordered_prompt_ids(values: list[Any]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for prompt_id in PROMPT_ID_RE.findall(str(value)):
+            if prompt_id not in seen:
+                seen.add(prompt_id)
+                ordered.append(prompt_id)
+    return ordered
+
+
+def _normalise_recommendation_prompt_ids(recommendations: dict[str, Any]) -> None:
+    """Backfill recommendation prompt links from evidence refs before validation."""
+    llm_recs: list[dict[str, Any]] = []
+    for rec in _validation_list(recommendations.get("recommendations")):
+        if not isinstance(rec, dict) or rec.get("source") != "llm":
+            continue
+        llm_recs.append(rec)
+        direct_ids = _ordered_prompt_ids(_validation_list(rec.get("addresses_prompts")))
+        evidence_ids = _ordered_prompt_ids(_validation_list(rec.get("evidence")))
+        merged: list[str] = []
+        for prompt_id in [*direct_ids, *evidence_ids]:
+            if prompt_id not in merged:
+                merged.append(prompt_id)
+        if len(direct_ids) < CLAIM_SYNTHESIS_PROMPT_THRESHOLD and len(merged) >= CLAIM_SYNTHESIS_PROMPT_THRESHOLD:
+            rec["addresses_prompts"] = merged
+
+    synthesis_claims = [claim for claim in _validation_list(recommendations.get("synthesis_claims")) if isinstance(claim, dict)]
+    claim_recs = [rec for rec in llm_recs if rec.get("category") == "claim_synthesis"]
+    if len(synthesis_claims) == 1 and claim_recs:
+        merged = _ordered_prompt_ids(_validation_list(synthesis_claims[0].get("addresses_prompts")))
+        for rec in claim_recs:
+            for prompt_id in _ordered_prompt_ids(_validation_list(rec.get("addresses_prompts"))):
+                if prompt_id not in merged:
+                    merged.append(prompt_id)
+        if len(merged) >= CLAIM_SYNTHESIS_PROMPT_THRESHOLD:
+            synthesis_claims[0]["addresses_prompts"] = merged
 
 
 def _claim_synthesis_pair_issues(claims: list[Any], llm_items: list[dict[str, Any]]) -> list[str]:
@@ -2697,6 +2988,7 @@ def _tool_record_recommendations(args: dict) -> dict:
         recommendations["article_slug"] = article_slug
     elif payload_slug != article_slug:
         raise ValueError("recommendations.article_slug must match article_slug")
+    _normalise_recommendation_prompt_ids(recommendations)
     gap = _read_json(_output_paths(run_dir)["gaps_dir"] / f"{article_slug}.json")
     if not isinstance(gap, dict):
         gap = {}
@@ -3186,6 +3478,7 @@ def _tool_record_draft_package(args: dict) -> dict:
         raise ValueError("package.markdown is required")
     if not isinstance(html_text, str) or not html_text.strip():
         raise ValueError("package.html is required")
+    html_text = _ensure_optimised_article_style(html_text)
     if not isinstance(schema, dict):
         raise ValueError("package.schema must be a JSON object")
     if not isinstance(diff_markdown, str) or not diff_markdown.strip():

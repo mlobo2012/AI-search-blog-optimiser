@@ -29,11 +29,8 @@ Treat the absolute paths as host references only. Read and write real artefacts 
 
 ## Required MCP Tools
 
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__list_artifacts`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_bundle_text`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_json_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_text_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_recommendations`
+- `ToolSearch` for dashboard tools if the first dashboard prefix is unavailable
+- dashboard MCP tools ending in `list_artifacts`, `read_bundle_text`, `read_json_artifact`, `read_text_artifact`, and `record_recommendations`; in Claude Code these are usually exposed as `mcp__blog-optimiser-dashboard__...`
 
 ## Required Reads
 
@@ -47,6 +44,11 @@ Treat the absolute paths as host references only. Read and write real artefacts 
 - `competitors/{article_slug}.json` if it exists
 - `references/geo-article-contract.md` via `read_bundle_text`
 
+## GEO audit gate
+
+Use the 40-point GEO audit from `references/geo-article-contract.md` to set `audit.score_before`
+and `audit.score_target`; recommendations should close concrete contract gaps, not generic SEO gaps.
+
 Before reading optional artefacts, call `list_artifacts` for `rubric`, `gaps`, and `competitors`.
 If `rubric/{article_slug}.json` exists, read it and preserve every item. These rubric items are
 already detected. Do NOT regenerate recommendations for them. Your job is synthesis on top of the
@@ -58,24 +60,29 @@ Ignore legacy mode names. Resolve and emit exactly one:
 
 - `peec-prompt-matched` when `gaps.matched_prompts.length >= 1`
 - `peec-topic-level` when `gaps.matched_prompts.length == 0` and `gaps.topic_level_signals` is non-empty
-- `voice-rubric` otherwise
 
-If `mode == "peec-prompt-matched"` or `mode == "peec-topic-level"`, emit 3-8 LLM-source
-recommendations. If `mode == "voice-rubric"`, emit 2-6 LLM-source recommendations. Rubric-source
-items are additional and do not count toward the LLM-source budget. Off-page recs are additional
-to the on-page budget, capped at 4.
+If neither Peec mode is supported by the available gap artefact, stop and return a concise blocker
+instead of writing a weak fallback recommendation file.
 
-**Recommendation count discipline.** For `peec-prompt-matched` articles, generate exactly 3-8
-LLM-source recommendations (inclusive). Do NOT generate 9 or more. If you have more than 8
-candidate recs, MERGE the two lowest-priority candidates into a single composite rec, or DROP the
-lowest-priority candidate. The validator enforces this bound and will reject and retry if you exceed
-it — saving the retry cycle is worth a bit of merging.
+Use all matched prompts for synthesis, but merge overlapping prompt needs into cluster-level
+recommendations. The final LLM-source recommendation set should usually contain 5-6 items and must
+stay within the validator's 3-8 bound. Rubric-source items are additional only when already present
+in the rubric artefact; do not generate duplicate rubric items. Project-level off-page recs are
+companion actions only; they must never replace article-specific on-page recommendations.
+
+**Recommendation count discipline.** For Peec-backed articles, generate exactly 3-8 LLM-source
+recommendations (inclusive). Do NOT generate 9 or more. If you have more than 8 candidate recs,
+MERGE the two lowest-priority candidates into a single composite rec, or DROP the lowest-priority
+candidate. Saving the retry cycle is worth a bit of merging. Prefer at least four article-specific
+on-page recommendations before considering any off-page or source-displacement action.
 
 **`addresses_prompts` minimum.** Every recommendation MUST address at least 3 prompt ids in its
 `addresses_prompts` array. If a rec is targeting a single specific prompt, find 2 related prompts
 that the same rec also helps (e.g., adjacent prompts in the same topic cluster, or prompts in the
 same engine where the rec applies broadly). If you cannot find 3 related prompts for a candidate
 rec, drop the rec — it is too narrow to be cost-effective.
+The dashboard validator enforces this on every `llm` recommendation, so do not rely on evidence
+references alone. Each recommendation object must include `addresses_prompts` directly.
 
 ## Signal Enum
 
@@ -156,8 +163,10 @@ Use this decision tree:
   competitor explicitly.
 - CORPORATE or REFERENCE dominance: emit an entity/schema rec naming Organization, Person, and
   BreadcrumbList.
-- UGC dominance with high retrieval: emit a distribution rec naming the relevant surface such as
-  YouTube or Reddit.
+- UGC dominance with high retrieval: add a distribution rec only if the article itself naturally
+  supports a community/video/search-distribution angle. Otherwise keep UGC in `off_page_actions[]`
+  or the handoff and spend visible recommendation slots on the article's topic, category, brand,
+  and competition gaps.
 
 When at least 4 prompts are dominated by EDITORIAL citations, you must emit a
 `source_displacement` rec with `competitors_displaced[]`.
@@ -174,6 +183,9 @@ positioning sentence, not a keyword cluster. When 3 or more prompts share a clea
   entry to top-level `synthesis_claims[]` with the same `addresses_prompts` array, the synthesised
   `claim` sentence, the `section_target`, and `evidence_refs`. The two write paths must be paired —
   one without the other is a contract violation.
+- The paired `synthesis_claims[]` entry must include every prompt id used by the corresponding
+  `claim_synthesis` recommendation. A prompt id present on the rec but absent from the claim will
+  be rejected by `record_recommendations`.
 - include `claim`, `addresses_prompts` (3+ prompt ids), `prompt_visibility`, and any other signals
   from the cluster
 
@@ -188,12 +200,12 @@ Do not create one rec per prompt when one claim addresses the cluster.
 - Engine asymmetry: If any prompt has `engines_lost.length >= 2`, emit an `engine_specific` rec or
   include `engine_pattern_asymmetry` in `signal_types`.
 - Off-page: For every `peec_actions.overview_top_opportunities[]` item with `gap_percentage >= 50`
-  and `relative_score >= 2`, emit an `off_page` rec and a matching top-level `off_page_actions[]`
-  entry. Cap at 4. The `fix` must name a specific domain or surface from the Peec data.
+  and `relative_score >= 2`, add a matching top-level `off_page_actions[]` entry. Emit an
+  `off_page` recommendation only after the article has at least four specific on-page recs and only
+  when the action is tied to this article's topic. Cap off-page recommendations at 2. The `fix` must
+  name a specific domain or surface from the Peec data.
 - Source displacement: If at least 4 prompts are dominated by EDITORIAL citations, emit a
   `source_displacement` rec with `competitors_displaced[]`.
-- Voice-rubric mode: If no Peec gap is admissible, write synthesis recs from article, evidence,
-  voice, and the GEO contract only. Do not invent Peec metrics.
 
 ## Evidence Reference Rules
 
@@ -216,13 +228,24 @@ matching this schema. Pass the object itself; do not pre-serialize it.
   "run_id": "<run_id>",
   "generated_at": "<iso8601>",
   "preset": "announcement_update | comparison | how_to | listicle | glossary | case_study | pillar | narrative_editorial",
-  "mode": "peec-prompt-matched | peec-topic-level | voice-rubric",
+  "mode": "peec-prompt-matched | peec-topic-level",
   "audit": {
     "score_before": 0,
     "score_target": 32,
     "score_max": 40,
     "blocking_issues": ["..."]
   },
+  "quality_contract": {
+    "universal": [{"key": "tldr_block", "required": true}],
+    "conditional": [{"key": "faq_block", "required": true, "applicable": true}]
+  },
+  "blueprint": {
+    "schema_plan": {"primary_type": "BlogPosting"}
+  },
+  "matched_prompts": [{"prompt_id": "pr_xxx", "prompt_text": "..."}],
+  "reviewer_plan": {"status": "selected", "reviewer_id": "..."},
+  "evidence_plan": {"required_source_count": 5, "must_cite_claim_ids": ["claim_01"]},
+  "internal_link_plan": {"minimum_internal_links": 3, "targets": ["https://..."]},
   "category_lens": {
     "topic_cluster": "<topic name or short summary>",
     "category_leaders": [{"domain": "...", "classification": "EDITORIAL"}],
@@ -294,6 +317,7 @@ matching this schema. Pass the object itself; do not pre-serialize it.
       "title": "...",
       "description": "...",
       "fix": "<concrete instruction>",
+      "addresses_prompts": ["pr_xxx", "pr_yyy", "pr_zzz"],
       "signal_types": ["prompt_visibility", "engine_pattern_asymmetry"],
       "target_engines": ["chatgpt-scraper", "perplexity-scraper"],
       "per_engine_lift": {
@@ -338,10 +362,12 @@ Append LLM-source recs after rubric-source items. Set `recommendation_count` to 
 
 - No generic advice.
 - Every recommendation must carry evidence.
+- Do not copy large excerpts.
 - Do not quote article text, gap chat excerpts, or contract text beyond short labels or one
   required gap-chat excerpt.
 - Do not push recommendation stage state separately. `record_recommendations` owns the artifact
   write and `articles[].stages.recommendations`.
+- Never mark top-level `pipeline.analysis` or `pipeline.recommendations`.
 - Never write top-level `stages`. Never write `articles` as an object map keyed by slug. Use
   `completed`, not `complete`.
 
