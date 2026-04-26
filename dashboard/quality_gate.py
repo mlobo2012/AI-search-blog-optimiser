@@ -796,7 +796,7 @@ def _validate_trust_block(author_validation: dict[str, Any], reviewers: list[dic
     if author_passed and display_name:
         return {
             "passed": True,
-            "source": "reviewers_json" if reviewer_id else "author_validation",
+            "source": "author_validation",
             "author_name": display_name,
         }
     return {
