@@ -2,6 +2,8 @@
 
 ## TL;DR
 
+A Claude Cowork desktop plugin for rewrite-only blog optimisation aimed at AI-search citation. It crawls an existing blog with Firecrawl MCP or Crawl4AI MCP, builds a site-scoped brand voice baseline, generates evidence-grounded recommendations, and either produces an optimised rewrite or blocks the article truthfully in a local report dashboard.
+
 Give AI Search Blog Optimiser a company blog URL. It indexes the blog, learns and reuses the brand voice, reads Peec MCP data, creates GEO recommendations, and uses a writer agent to turn existing posts into optimised articles.
 
 Most company blogs were written for Google search, not for AI answers, citations, and prompt-shaped buyer questions. AI Search Blog Optimiser helps product marketers, SEO teams, SEO/GEO agencies, and content leads migrate existing owned content forward into GEO.
@@ -18,6 +20,40 @@ Run this in Claude Cowork:
 /blog-optimiser https://www.granola.ai/blog --max-articles 3
 ```
 
+For targeted article testing:
+
+```text
+/blog-optimiser https://www.granola.ai/blog --article-url https://www.granola.ai/blog/sign-in-with-microsoft --article-url https://www.granola.ai/blog/granola-mcp
+```
+
+## Run Size And Article Selection
+
+By default, a discovery run processes up to 20 articles from the supplied blog index. This is a default run-size cap, not a hard product ceiling: pass `--max-articles N` to process a different number of discovered articles.
+
+For targeted work, pass one or more exact article URLs:
+
+```text
+/blog-optimiser https://your-blog.com/blog --article-url https://your-blog.com/blog/post-one --article-url https://your-blog.com/blog/post-two
+```
+
+When `--article-url` is present, the crawler skips index discovery and processes only the supplied URLs in that order. It does not backfill with recent posts, related posts, sitemap URLs, or inferred substitutes.
+
+## Crawl Backends
+
+The plugin can crawl through either Firecrawl MCP or Crawl4AI MCP:
+
+- Firecrawl MCP is preferred when Claude Cowork exposes a connected tool family with `firecrawl_scrape` and `firecrawl_map`.
+- Crawl4AI MCP remains supported and is used when Firecrawl is not connected or when a tiny Firecrawl prereq probe fails.
+- MCP server names are discovered by capability. The plugin does not require the Firecrawl server to be named `firecrawl` or the Peec server to be named `peec`.
+
+For Claude Code testing, add Firecrawl with a local private scope:
+
+```bash
+claude mcp add firecrawl -e FIRECRAWL_API_KEY=your-api-key -- npx -y firecrawl-mcp
+```
+
+For Claude Cowork/Desktop, connect Firecrawl MCP with the same local stdio pattern or Firecrawl's hosted MCP endpoint if your client supports streamable HTTP. Keep API keys in the MCP client configuration, not in the plugin repository.
+
 For your own blog:
 
 ```text
@@ -28,12 +64,85 @@ What happens:
 
 - the dashboard opens for the run
 - the blog index is crawled
-- the plugin pulls article content from the URLs it finds
+- the plugin pulls article content through Firecrawl MCP or Crawl4AI MCP
 - brand voice is generated and saved for reuse in later runs
 - Peec data is used to find where the brand is missing in AI answers
 - competitor and top-cited source patterns are used to shape the recommendations
 - recommendations are passed to a writer agent to create an optimised article
 - you get markdown, HTML, schema, diff, handoff notes, and a quality manifest
+
+## Storage
+
+Writable root selection:
+
+- `CLAUDE_PLUGIN_DATA` when Cowork provides it
+- otherwise platform default roots below
+- `BLOG_OPTIMISER_DATA_ROOT` overrides both for tests/dev only
+
+Default fallback roots:
+
+- macOS: `~/Library/Application Support/ai-search-blog-optimiser/v3`
+- Linux: `~/.local/share/ai-search-blog-optimiser/v3`
+- Windows: `%APPDATA%\ai-search-blog-optimiser\v3`
+
+When `CLAUDE_PLUGIN_DATA` is used, the runtime performs a one-time import from the legacy default root if the new plugin data directory is empty. Set `BLOG_OPTIMISER_SKIP_LEGACY_IMPORT=1` to disable that import path in tests or debugging.
+
+Layout:
+
+```text
+runs/{run_id}/
+  state.json
+  run-summary.md
+  outputs/
+    articles/
+    evidence/
+    recommendations/
+    optimised/
+sites/{host}/
+  voice.json
+  reviewers.json
+```
+
+## Draft Article Outputs
+
+Each draft-ready article writes a set of files under:
+
+```text
+runs/{run_id}/outputs/optimised/{article_slug}.*
+```
+
+Generated draft files:
+
+- `{article_slug}.html` — styled, publish-review HTML preview with the optimized article, visible TL;DR, reviewer/evidence block, tables, FAQ, links, and embedded JSON-LD.
+- `{article_slug}.md` — markdown version of the optimized article body.
+- `{article_slug}.schema.json` — standalone structured data package for the page.
+- `{article_slug}.diff.md` — editorial change summary showing what changed and why.
+- `{article_slug}.handoff.md` — publishing handoff notes, including implementation notes and any off-page or follow-up actions that should not be rendered in the article itself.
+- `{article_slug}.manifest.json` — validator-generated quality report covering implemented modules, blocking issues, evidence, schema, trust block, score, and recommendation implementation status.
+
+Most useful for publishing handoff:
+
+1. `{article_slug}.html` — best source for the final article layout and copy review before porting into the company CMS.
+2. `{article_slug}.md` — easiest source for copying body content into a CMS editor that does not accept raw HTML.
+3. `{article_slug}.handoff.md` — best operational checklist for the publisher or content team.
+4. `{article_slug}.schema.json` — best source for adding or checking JSON-LD/schema in the CMS.
+5. `{article_slug}.manifest.json` — best QA artifact for confirming the article passed the GEO quality gate before publication.
+
+## Runtime rules
+
+- The main session is the orchestrator.
+- `open_dashboard` requires a concrete `run_id`.
+- `register_run` is the bootstrap call for fresh runs.
+- `register_run` requires `peec_project_id`.
+- `get_paths` is no longer part of the normal flow.
+- `state.json` is the source of truth.
+- Same-site voice reuse is automatic unless `--refresh-voice` is set.
+- Peec is required. Missing Peec should block the run or article instead of silently downgrading to a GEO-only rewrite.
+- Peec MCP discovery is capability-based, not server-name-based. In Cowork, a valid external Peec MCP may appear under a UUID-style tool prefix instead of `mcp__peec__...`.
+- Firecrawl MCP discovery is capability-based, not server-name-based. In Cowork, a valid external Firecrawl MCP may appear under a UUID-style tool prefix instead of `mcp__firecrawl__...`.
+- The dashboard is a read-only report surface. It should not own orchestration or continue controls.
+- `write_json_artifact` expects raw JSON objects or arrays. The runtime now normalizes accidentally stringified JSON payloads for backward compatibility.
+- Core pipeline writes should use typed dashboard tools so artifact persistence and state updates happen atomically.
 
 ## What Problem Does This Solve?
 

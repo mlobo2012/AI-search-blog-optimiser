@@ -27,11 +27,8 @@ Treat the absolute paths as host references only. Read and write the actual arte
 
 ## Required MCP tools
 
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_bundle_text`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_json_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_text_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_draft_package`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__fail_article_stage`
+- `ToolSearch` for dashboard tools if the first dashboard prefix is unavailable
+- dashboard MCP tools ending in `read_bundle_text`, `read_json_artifact`, `read_text_artifact`, `record_draft_package`, and `fail_article_stage`; in Claude Code these are usually exposed as `mcp__blog-optimiser-dashboard__...`
 
 ## Required reads
 
@@ -52,16 +49,19 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
 
 ## Procedure
 
-1. Read the recommendation blueprint and treat it as the source of truth.
-2. Read the evidence pack and use its claims and source URLs directly.
-3. Read `site/reviewers.json` only if you need to confirm a selected reviewer exists or inspect
+1. Read the source article first and use `articles/{article_slug}.json.body_md` as the rewrite spine.
+   Keep the original article topic, product context, core claims, and reader intent intact.
+2. Read the recommendation blueprint and treat it as the source of truth for improvements only.
+3. Read the evidence pack and use its claims and source URLs directly.
+4. Read `site/reviewers.json` only if you need to confirm a selected reviewer exists or inspect
    their role wording. It is always present as a JSON array and may be empty.
-4. Read `references/geo-article-contract.md` via `read_bundle_text` before scoring the rebuilt draft.
-5. Treat `reviewer_plan`, `evidence_plan`, and `internal_link_plan` as hard requirements, not hints.
-6. Rebuild the article to the best article-type shape for that preset.
-7. Preserve facts and brand voice, but do not preserve weak source structure by default.
-8. Apply the site voice baseline from `site/voice.json` first. Only read `site/brand-voice.md` if the JSON metadata is unavailable.
-9. Treat these as blocking quality-gate checks:
+5. Read `references/geo-article-contract.md` via `read_bundle_text` before scoring the rebuilt draft.
+6. Treat `reviewer_plan`, `evidence_plan`, and `internal_link_plan` as hard requirements, not hints.
+7. Rebuild the article to the best article-type shape for that preset without pivoting away from the source article.
+8. Preserve facts and brand voice, but do not preserve weak source structure by default.
+9. Apply recommendations as edits to the article. Never render the recommendation itself, Peec rationale, implementation notes, article-package language, or advice to the writer in visible HTML.
+10. Apply the site voice baseline from `site/voice.json` first. Only read `site/brand-voice.md` if the JSON metadata is unavailable.
+11. Treat these as blocking quality-gate checks:
    - Do not pass `trust_block` with an anonymous, `Team`, `Staff`, or first-name-only byline.
    - Use the selected reviewer from `reviewer_plan` when the source author is weak. Do not invent a reviewer.
    - If `reviewer_plan.status == "missing"`, keep the visible trust block honest and let validation fail.
@@ -88,9 +88,18 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
      must exactly match the visible `<dt>` question text.
    - Include at least `internal_link_plan.minimum_internal_links` contextual internal links.
    - Include a visible reviewer block with full name, role, published date, updated/reviewed date, and a one-line evidence basis.
-   - Prefer a retrieval-oriented title/H1 when the source title is too launch-like to win the
-     matched prompts.
-10. Populate `rec_implementation_map` after the schema package is complete:
+   - Keep the visible H1 anchored to the source title, slug, and original launch/update intent. You
+     may add retrieval language to the H1, but do not remove the source article's core title tokens.
+     Example: prefer `Sign in with Microsoft for Granola: Teams and Outlook workflows` over
+     replacing the topic with `How does Granola work with Microsoft Teams and Outlook?`.
+   - Visible draft copy must not contain advisory/process phrases such as "the article should",
+     "this rewrite", "the optimized page", "Peec showed", "recommendation", or "article package".
+   - Added entities, integrations, workflows, and claims must be supported by the original
+     `body_md`, recommendations, or evidence pack. If the support is absent, remove the addition or
+     call `fail_article_stage`.
+   - Off-page-only recommendations belong only in `diff_markdown` or `handoff_markdown`, never in
+     visible HTML.
+12. Populate `rec_implementation_map` after the schema package is complete:
    - Iterate over every item in `recommendations.recommendations`.
    - Write one entry per rec id into `rec_implementation_map`.
    - The map MUST follow this exact JSON shape:
@@ -104,10 +113,10 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
          "evidence_inserted": ["peec_prompt_pr_xxx", "peec_signal_engine_pattern_asymmetry"],
          "notes": "<one-line summary of what the generator did>"
        },
-       "rec-002": {
-         "implemented": false,
-         "reason": "non-applicable"
-       }
+     "rec-002": {
+       "implemented": false,
+       "reason": "non-applicable"
+     }
      }
      ```
    - The field name is `implemented` and its value is BOOLEAN (`true` or `false`).
@@ -123,10 +132,12 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
      the quality gate.
    - Critical LLM-source recs must never be omitted. If a critical LLM-source rec cannot be
      implemented and none of the three reasons is honest, call `fail_article_stage`.
+   - For `category: "off_page"` or off-page-only outreach/source-displacement recs, do not render
+     the action in visible HTML. Mark the entry exactly as `{ "implemented": false, "reason": "non-applicable" }` and explain the action in `handoff_markdown`.
    - Rubric-source recs still receive entries, but a non-applicable reason is acceptable when the
      final draft or schema layer supersedes the deterministic lint item.
-11. If the article cannot honestly support a compliant rewrite, call `fail_article_stage(stage="draft", reason=...)` instead of forcing output.
-12. Otherwise call `record_draft_package` with:
+13. If the article cannot honestly support a compliant rewrite, call `fail_article_stage(stage="draft", reason=...)` instead of forcing output.
+14. Otherwise call `record_draft_package` with:
    - `markdown`
    - `html`
    - `schema`
@@ -134,17 +145,21 @@ missing, if the trust/evidence/schema checks fail, or if `audit_after < 32`.
    - `handoff_markdown`
    - optional `audit_after`
    - `rec_implementation_map`
-13. The manifest must be controller-generated, not self-reported. Do not write `optimised/{article_slug}.manifest.json` yourself. The controller will copy `rec_implementation_map` into `optimised/{article_slug}.manifest.json` and validate it.
-14. Trust the returned validator status as authoritative. Do not push a conflicting draft status.
-15. Scope drift is a hard failure. If the rewrite pivots to a new topic, prompt family, or entity set, the controller should block it.
+15. The manifest must be controller-generated, not self-reported. Do not write `optimised/{article_slug}.manifest.json` yourself. The controller will copy `rec_implementation_map` into `optimised/{article_slug}.manifest.json` and validate it.
+16. Trust the returned validator status as authoritative. Do not push a conflicting draft status.
+17. Scope drift is a hard failure. If the rewrite pivots to a new topic, prompt family, or entity set, the controller should block it. Before calling `record_draft_package`, compare the source title/slug with the visible H1 and make sure at least two distinctive source/slug tokens remain visible when possible.
 Never write top-level `stages`. Never write `articles` as an object map keyed by slug. Use `completed`, not `complete`. Never mark top-level `pipeline.draft` from a single-article generator; the validator and main session own draft truth. Never use top-level article keys like `draft_status`, `status`, or `quality_gate` as substitutes for `articles[].stages.draft`.
 
 ## Headings / Structure
 
-- Use one visible H1 that matches the article's retrieval-oriented title.
+- Use one visible H1 that keeps the article's source-topic anchor while adding retrieval language.
 - Use H2s for the main body sections and H3s only for nested subsections within an H2 section.
 - Preserve the article's information architecture unless the recommendation blueprint explicitly
   requires a restructuring to satisfy the GEO article contract.
+- The HTML must be a polished reading surface, not bare semantic tags. Include the article content
+  in a complete HTML document with readable typography, a blue-accent TL;DR block, a bordered
+  reviewer/evidence block, styled tables, and comfortable spacing. Keep all styling inside the
+  document head so the dashboard iframe looks like a finished article.
 - **Question-H2 enforcement.** When the rec list contains any recommendation whose `category` is in
   `{"engine_specific", "geo_hygiene"}` AND whose `title` or `description` mentions FAQ, question H2,
   question-format headings, or "question target", the optimised draft MUST satisfy the

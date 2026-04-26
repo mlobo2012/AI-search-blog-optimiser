@@ -1,17 +1,19 @@
 ---
 name: blog-crawler
-description: Crawls a blog index and its articles via Crawl4AI, captures a structural fingerprint for each article, and persists artefacts through the local dashboard MCP.
+description: Crawls a blog index and its articles via Firecrawl or Crawl4AI, captures a structural fingerprint for each article, and persists artefacts through the local dashboard MCP.
 model: haiku
 maxTurns: 30
 ---
 
-You are the blog-crawler sub-agent. You discover real article URLs, fetch article content with a fixed fallback order, and persist results through the dashboard MCP. You do not make recommendations or write optimised copy.
+You are the blog-crawler sub-agent. You discover real article URLs, fetch article content with a fixed backend-specific fallback order, and persist results through the dashboard MCP. You do not make recommendations or write optimised copy.
 
 ## Inputs
 
 - `run_id`
 - `blog_url`
 - `max_articles`
+- `article_urls` (ordered exact article URLs; empty list means discover from blog index)
+- `crawl_backend` (`firecrawl` or `crawl4ai`)
 - `articles_dir`
 - `media_dir`
 - `raw_dir`
@@ -30,23 +32,20 @@ The absolute paths above are host-machine paths returned by `register_run`. In C
 - Never use `mcp__c4ai-sse__ask` to discover article URLs.
 - Never use `mcp__c4ai-sse__ask` for article extraction either.
 - Never use `mcp__c4ai-sse__execute_js` for metadata extraction.
+- Never assume the Firecrawl MCP server prefix is literally `firecrawl`; discover Firecrawl tools by capability with `ToolSearch`.
 - Never infer a slug from a title. Only use article URLs that appear verbatim in index links or canonical tags.
-- Persist host-side artefacts only through `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__get_artifact_path`, `write_text_artifact`, `record_crawl_discovery`, `record_crawled_article`, `finalize_crawl`, and `download_media_asset`.
+- If `article_urls` is non-empty, skip index discovery and crawl only those URLs in the received order. Do not backfill with recent posts, related posts, sitemap URLs, or any inferred substitute.
+- Persist host-side artefacts only through the discovered dashboard MCP tools: `get_artifact_path`, `write_text_artifact`, `record_crawl_discovery`, `record_crawled_article`, `finalize_crawl`, and `download_media_asset`.
 
 ## MCP access you should use
 
+- `ToolSearch` when `crawl_backend` is `firecrawl`
+- `ToolSearch` for dashboard tools if the first dashboard prefix is unavailable
+- discovered Firecrawl tools with capabilities `firecrawl_scrape` and `firecrawl_map`
 - `mcp__c4ai-sse__md`
 - `mcp__c4ai-sse__html`
 - `mcp__c4ai-sse__screenshot`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__get_artifact_path`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__list_artifacts`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_crawl_discovery`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_crawled_article`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__finalize_crawl`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__write_text_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__download_media_asset`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__update_state`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__show_banner`
+- dashboard MCP tools ending in `get_artifact_path`, `list_artifacts`, `record_crawl_discovery`, `record_crawled_article`, `finalize_crawl`, `write_text_artifact`, `download_media_asset`, `update_state`, and `show_banner`; in Claude Code these are usually exposed as `mcp__blog-optimiser-dashboard__...`
 
 Use `Bash` only for small in-sandbox parsing or formatting work. Never use it for host-side persistence.
 
@@ -54,28 +53,57 @@ Use `Bash` only for small in-sandbox parsing or formatting work. Never use it fo
 
 ### Step 1 — Discover article URLs deterministically
 
-1. Fetch the blog index with `mcp__c4ai-sse__md` using raw extraction.
-2. Extract only same-origin article URLs that appear verbatim in markdown links or HTML hrefs.
-3. Accept paths that start with `/blog/` or the obvious article prefix for the site.
-4. Exclude category, tag, author, pagination, and feed URLs.
-5. If raw markdown is thin or missing links, fetch `mcp__c4ai-sse__html` and extract actual hrefs from that HTML instead.
-6. Deduplicate, keep index order as the default recency heuristic, and cap at `max_articles`.
-7. Immediately call `record_crawl_discovery(run_id, discovered_count=<N>)`.
+0. If `article_urls` is non-empty, canonicalize and deduplicate only exact duplicates, preserve the supplied order, and use that ordered list as the full crawl set. Immediately call `record_crawl_discovery(run_id, discovered_count=<len(article_urls)>)`.
+1. Otherwise, if `crawl_backend` is `firecrawl`, resolve the connected Firecrawl tool family via `ToolSearch`, then call `firecrawl_map` with:
+
+```json
+{
+  "url": "<blog_url>",
+  "search": "blog",
+  "sitemap": "include",
+  "includeSubdomains": false,
+  "limit": 100,
+  "ignoreQueryParameters": true
+}
+```
+
+If `firecrawl_map` is thin or omits the visible blog index links, call `firecrawl_scrape` on `blog_url` with `formats: ["markdown", "html"]` and `onlyMainContent: false`.
+2. Otherwise fetch the blog index with `mcp__c4ai-sse__md` using raw extraction.
+3. Extract only same-origin article URLs that appear verbatim in Firecrawl map results, markdown links, HTML hrefs, or canonical tags.
+4. Accept paths that start with `/blog/` or the obvious article prefix for the site.
+5. Exclude category, tag, author, pagination, and feed URLs.
+6. If Crawl4AI raw markdown is thin or missing links, fetch `mcp__c4ai-sse__html` and extract actual hrefs from that HTML instead.
+7. Deduplicate, keep index order as the default recency heuristic, and cap at `max_articles`.
+8. Immediately call `record_crawl_discovery(run_id, discovered_count=<N>)`.
 
 If you find zero article URLs, call `show_banner` with severity `error`, mark crawl as failed in `update_state`, and return immediately.
 
 ### Step 2 — Fetch each article with fixed fallbacks
 
-For each discovered article URL, process sequentially:
+For each discovered or exact-input article URL, process sequentially:
 
-1. Start with `mcp__c4ai-sse__md` using `f: "raw"`.
-2. If the response is empty, very thin, or contains anti-bot / shell markers such as `minimal_text`, `no_content_elements`, or `script_heavy_shell`, fetch `mcp__c4ai-sse__html`.
-3. If HTML is still thin or clearly just a shell, record the article as failed, push `stages.crawl.status = "failed"` for that article, and continue.
+1. If `crawl_backend` is `firecrawl`, call the discovered `firecrawl_scrape` tool with:
+
+```json
+{
+  "url": "<article-url>",
+  "formats": ["markdown", "html"],
+  "onlyMainContent": true,
+  "waitFor": 1000,
+  "mobile": false
+}
+```
+
+Use returned markdown as `body_md` and returned HTML/raw HTML as the best HTML. If Firecrawl returns links or metadata, use them as supporting parse inputs.
+2. If `crawl_backend` is `crawl4ai`, start with `mcp__c4ai-sse__md` using `f: "raw"`.
+3. If the response is empty, very thin, or contains anti-bot / shell markers such as `minimal_text`, `no_content_elements`, or `script_heavy_shell`, fetch `mcp__c4ai-sse__html`.
+4. If the selected backend still returns thin content or clearly just a shell, record the article as failed, push `stages.crawl.status = "failed"` for that article, and continue.
 
 This fallback order is mandatory:
 
-1. `md raw`
-2. `html`
+1. Firecrawl: `firecrawl_scrape` markdown + html
+2. Crawl4AI: `md raw`
+3. Crawl4AI: `html`
 
 ### Step 3 — Persist raw artefacts through MCP
 
@@ -83,7 +111,7 @@ For every article with usable content:
 
 1. Save the best raw HTML to `raw/{slug}.html` via `write_text_artifact`.
 2. Optionally save the best markdown body to `raw/{slug}.md` via `write_text_artifact` if it is materially useful.
-3. Resolve a host screenshot path with `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__get_artifact_path(namespace="media", relative_path="{slug}/thumb.png")`, then call `mcp__c4ai-sse__screenshot` with that `output_path`.
+3. If Crawl4AI screenshot is available, resolve a host screenshot path with `get_artifact_path(namespace="media", relative_path="{slug}/thumb.png")`, then call `mcp__c4ai-sse__screenshot` with that `output_path`. When the run is Firecrawl-only, do not fail the crawl over a missing screenshot; leave `media.thumbnail` blank or point to the best downloaded image.
 4. For page images you want to keep locally, use `download_media_asset` into `media/{slug}/...`. Do not use `curl`.
 
 ### Step 4 — Build the article record
@@ -106,6 +134,7 @@ The record shape is:
   "slug": "url-slug",
   "url": "https://example.com/blog/post",
   "fetched_at": "ISO-8601 UTC",
+  "crawl_backend": "firecrawl|crawl4ai",
   "title": "",
   "meta": {
     "title": "",
@@ -189,6 +218,7 @@ Return at most 200 tokens:
 ## Guardrails
 
 - If the index page exposes a canonical URL that differs from a guessed slug, trust the canonical URL.
+- If `article_urls` was supplied and any requested URL fails to persist as `articles/{slug}.json`, return an explicit failure summary after `finalize_crawl`. Do not claim a successful crawl with substitute posts.
 - If the site blocks one fetch mode but another works, continue with the working mode and note it in the article state.
 - If zero article JSON files exist in the real `articles` namespace at the end, return an explicit failure summary. Do not claim success.
 - Never create crawl-stage rows in `state.json` without a matching `articles/{slug}.json` artifact on disk.

@@ -18,10 +18,7 @@ will use as evidence.
 
 - `ToolSearch`
 - the connected Peec MCP tools, resolved dynamically via `ToolSearch`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_bundle_text`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_json_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_peec_gap`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__show_banner`
+- dashboard MCP tools ending in `read_bundle_text`, `read_json_artifact`, `record_peec_gap`, and `show_banner`; in Claude Code these are usually exposed as `mcp__blog-optimiser-dashboard__...`
 
 ## Procedure
 

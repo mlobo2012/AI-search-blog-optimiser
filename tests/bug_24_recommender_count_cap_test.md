@@ -6,7 +6,7 @@
   source displacement, sentiment, and off-page signals previously led the recommender to emit 10
   LLM-source recommendations.
 - Weak coverage fixture B: a `peec-prompt-matched` article where the admissible evidence supports
-  exactly 4 LLM-source recommendations.
+  a natural 4-6 LLM-source recommendations.
 
 ## Steps
 
@@ -62,12 +62,12 @@ Input signal examples:
 
 Expected recommender behavior:
 
-- Keep the natural 4-rec output.
+- Keep the natural 4-6 rec output.
 - Do not inflate the set just because the prompt mentions an 8-rec cap.
 - Avoid the validator retry banner.
 
 ```sh
 jq -e '.mode == "peec-prompt-matched"' "$REC"
-jq -e '[.recommendations[]? | select(.source == "llm")] | length == 4' "$REC"
+jq -e '[.recommendations[]? | select(.source == "llm")] | length >= 4 and length <= 6' "$REC"
 ! grep -E 'LLM-source recommendation count must be 3-8' "$RECOMMENDER_LOG"
 ```

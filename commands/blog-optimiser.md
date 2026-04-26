@@ -1,6 +1,6 @@
 ---
 description: GEO-optimise a blog. Runs in the main session — never via an orchestrator sub-agent.
-argument-hint: "[blog-url] [--resume {run-id}] [--refresh-voice] [--max-articles N]"
+argument-hint: "[blog-url] [--resume {run-id}] [--refresh-voice] [--max-articles N] [--article-url URL ...]"
 allowed-tools: "*"
 ---
 
@@ -20,6 +20,7 @@ Read `skills/blog-optimiser-pipeline/SKILL.md` and follow it exactly. That skill
 - `--resume {run-id}` → resume an existing run
 - `--refresh-voice` → force a new voice baseline even if the same site already has one
 - `--max-articles N` → override the default article cap of 20
+- `--article-url <url>` → exact article input; may be repeated. When present, crawl only these URLs in input order.
 
 If neither a URL nor `--resume` is supplied, return a short usage message. Do not open the dashboard pre-emptively.
 
@@ -35,10 +36,12 @@ If neither a URL nor `--resume` is supplied, return a short usage message. Do no
 8. Treat the absolute paths from `register_run` as host references for MCP `output_path` arguments only.
 9. Draft visibility is driven by the dashboard validator output, not by generator confidence or self-reported pass/fail text.
 10. Do not assume the Peec MCP server is literally named `peec`. In Cowork it may be connected under a UUID-style server prefix. Discover the Peec tool family by capability and use it if present.
-11. Use `ToolSearch` when you need to resolve external MCP tool names dynamically. Restrict yourself to the blog optimiser dashboard MCP, Crawl4AI, and the connected Peec MCP if available; do not use unrelated tools just because `allowed-tools` is broad.
-12. When calling `write_json_artifact`, pass a raw JSON object or array in `data`. Never pre-serialize with `json.dumps`, `JSON.stringify`, or fenced JSON text.
-13. Prefer typed dashboard tools for core pipeline writes: `record_crawled_article`, `record_voice_baseline`, `record_peec_gap`, `record_competitor_snapshot`, `record_evidence_pack`, `record_recommendations`, `record_draft_package`, `fail_article_stage`, `finalize_crawl`, and `finalize_run_report`.
-14. The dashboard is a report surface only. Do not create or rely on dashboard continue gates.
+11. Do not assume the Firecrawl MCP server is literally named `firecrawl`. In Cowork it may be connected under a UUID-style server prefix. Discover the Firecrawl tool family by capability and prefer it for crawl/fetch work when present.
+12. Use `ToolSearch` when you need to resolve external MCP tool names dynamically. Restrict yourself to the blog optimiser dashboard MCP, Firecrawl, Crawl4AI, and the connected Peec MCP if available; do not use unrelated tools just because `allowed-tools` is broad.
+13. When calling `write_json_artifact`, pass a raw JSON object or array in `data`. Never pre-serialize with `json.dumps`, `JSON.stringify`, or fenced JSON text.
+14. Prefer typed dashboard tools for core pipeline writes: `record_crawled_article`, `record_voice_baseline`, `record_peec_gap`, `record_competitor_snapshot`, `record_evidence_pack`, `record_recommendations`, `record_draft_package`, `fail_article_stage`, `finalize_crawl`, and `finalize_run_report`.
+15. The dashboard is a report surface only. Do not create or rely on dashboard continue gates.
+16. If one or more `--article-url` flags are supplied, pass the exact ordered URL list into `register_run` as `article_urls` and into the crawler prompt as `article_urls`. Do not let discovery substitute other posts.
 
 ## Final message to the user
 

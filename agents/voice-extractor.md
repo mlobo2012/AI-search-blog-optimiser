@@ -21,9 +21,8 @@ The absolute paths are host paths for reference only. Do not use `Read`, `Write`
 
 ## Required MCP tools
 
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__list_artifacts`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__read_json_artifact`
-- `mcp__plugin_ai-search-blog-optimiser_blog-optimiser-dashboard__record_voice_baseline`
+- `ToolSearch` for dashboard tools if the first dashboard prefix is unavailable
+- dashboard MCP tools ending in `list_artifacts`, `read_json_artifact`, and `record_voice_baseline`; in Claude Code these are usually exposed as `mcp__blog-optimiser-dashboard__...`
 
 ## Procedure
 
