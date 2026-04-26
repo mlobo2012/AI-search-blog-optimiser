@@ -1,108 +1,115 @@
 # AI Search Blog Optimiser
 
-Turn a blog URL into AI-search-ready article rewrites.
+Give the workflow a company blog URL. It indexes the blog, learns the brand voice, finds GEO optimisation opportunities from Peec-backed AI visibility data, writes recommendations, then turns those recommendations into optimised article drafts.
 
-This is a Claude Cowork plugin for teams that want to run a weekly AI visibility workflow without manually copying prompts, citations, competitor mentions, recommendations, drafts, schemas, and QA notes between tools.
-
-## What Problem Does This Solve?
-
-Teams are starting to check whether ChatGPT, Perplexity, Google AI Overview, Gemini, Claude, and Copilot mention their brand when buyers ask category questions.
-
-The manual workflow is painful:
-
-1. Pick 10-20 high-intent prompts buyers might ask.
-2. Run those prompts across multiple AI engines.
-3. Log whether your brand appears.
-4. Log which competitors appear instead.
-5. Open the sources each engine cites.
-6. Work out why those sources are being trusted.
-7. Turn the gap into an article brief.
-8. Rewrite the article without making unsupported claims.
-9. Add schema, FAQ, evidence, links, trust blocks, and source citations.
-10. Check whether the rewrite actually implemented the recommendations.
-11. Repeat next week, because AI answers move.
-
-That work usually lands across SEO teams, content teams, product marketing, PR, and agencies. Monitoring tools can show the gap. The hard part is turning the gap into a usable content update every week.
-
-AI Search Blog Optimiser closes that loop.
-
-Give it a blog URL. It crawls the blog, reads live Peec AI data, finds the prompts and sources where the brand is losing, creates recommendations, writes optimized article drafts, and blocks anything that cannot be supported honestly.
-
-The value is speed and repeatability: instead of spending a day collecting screenshots, copying citations, briefing a writer, and QA-ing the result, you can run the workflow weekly and get draft-ready article packages plus a clear report of what still needs human input.
+The point is simple: reuse the owned content you already have, and make it much easier to improve it at scale for AI search.
 
 ## Quick Start
 
-Run the workflow from Claude Cowork:
+Run this in Claude Cowork:
 
 ```text
 /blog-optimiser https://www.granola.ai/blog --max-articles 2
 ```
 
-Expected result:
-
-- a local dashboard opens for the run
-- the plugin crawls the Granola blog
-- each article gets Peec-backed gap analysis
-- each article gets recommendations
-- each article gets an optimized markdown draft, HTML draft, schema, diff, handoff doc, and validation manifest
-- `run-summary.md` tells you which articles are draft-ready and which are blocked
-
-Use this for your own site:
-
-```text
-/blog-optimiser https://your-company.com/blog --max-articles 10
-```
-
-Run it every week:
+For your own blog:
 
 ```text
 /blog-optimiser https://your-company.com/blog --max-articles 20
 ```
 
-Resume a previous run:
+What happens:
+
+- the dashboard opens for the run
+- the blog index is crawled
+- the plugin pulls article content from the URLs it finds
+- brand voice is generated and saved for reuse in later runs
+- Peec data is used to find where the brand is missing in AI answers
+- competitor and top-cited source patterns are used to shape the recommendations
+- recommendations are passed to the next agent to create an optimised article
+- you get markdown, HTML, schema, diff, handoff notes, and a validation manifest
+
+## What Problem Does This Solve?
+
+Owned content matters for AI search, but most company blogs were not written for answer engines.
+
+Product marketers, content teams, SEO teams, PR teams, and agencies now have to answer questions like:
+
+- Are we mentioned when buyers ask ChatGPT or Perplexity about our category?
+- Which competitors are being cited instead?
+- Which third-party pages are AI engines trusting?
+- What structure or semantics do those cited pages have that our article is missing?
+- Can we improve our existing blog post instead of commissioning a new one?
+- Did the writer actually implement the recommendations?
+
+Doing this manually is slow.
+
+The work usually looks like this:
+
+1. Run buyer prompts across ChatGPT, Perplexity, Google AI Overview, Gemini, Claude, and Copilot.
+2. Capture which brands appear and which sources get cited.
+3. Open competitor pages and top-cited editorial pages.
+4. Compare their structure, schema, FAQ coverage, trust signals, evidence, and phrasing.
+5. Decide what your article is missing.
+6. Turn that into a digestible recommendation list.
+7. Hand it to a writer or product marketer.
+8. Rewrite the article.
+9. Check that the rewrite added the TL;DR, evidence, links, schema, FAQ, trust block, and prompt-shaped sections.
+10. Repeat next week because AI answers and citation surfaces change.
+
+That may be manageable for one or two posts. It breaks down across 20 or 30 articles.
+
+AI Search Blog Optimiser automates the upstream work: crawling your pages, reading Peec research, comparing against competitor and top-cited pages, generating recommendations, and then passing those recommendations into a drafting agent.
+
+It is a workflow for repurposing what you already own.
+
+## How It Works
+
+You give it the blog URL.
+
+The crawler indexes the blog and pulls article content. For a demo you can cap it at 2 or 3 articles. For real use, you can run it across the whole blog.
+
+Then the workflow runs in stages:
+
+1. **Crawl the blog** - discovers article URLs from the blog index and saves the source content.
+2. **Extract brand voice** - builds a reusable voice baseline for that site.
+3. **Read Peec gaps** - finds prompts, engines, competitors, cited domains, and source gaps.
+4. **Build evidence** - gathers the claims, sources, reviewer signals, and internal links the rewrite is allowed to use.
+5. **Generate recommendations** - identifies semantic and structural changes likely to improve AI citation.
+6. **Create the optimised article** - turns the recommendation list and original article into a draft.
+7. **Validate the output** - checks schema, FAQ, evidence, trust, internal links, recommendation implementation, and quality gate status.
+
+The important part is the waterfall:
 
 ```text
-/blog-optimiser --resume 2026-04-25T19-21-10
+blog URL
+  -> crawl articles
+  -> generate/reuse brand voice
+  -> read AI visibility gaps
+  -> compare against cited competitors and sources
+  -> generate recommendations
+  -> generate optimised article
+  -> hand off to content team
 ```
 
-Refresh the brand voice baseline:
-
-```text
-/blog-optimiser https://your-company.com/blog --refresh-voice
-```
-
-## How Does It Work?
-
-The workflow has seven stages.
-
-1. **Prereqs** - checks that Peec MCP and Crawl4AI are available.
-2. **Crawl** - discovers real article URLs from the blog index.
-3. **Voice** - builds or reuses a site-level brand voice baseline.
-4. **Analysis** - matches articles to Peec prompts, AI engines, source gaps, and competitor citations.
-5. **Evidence** - gathers claims, source URLs, reviewer candidates, and internal link options.
-6. **Recommendations** - turns the gap data into a rewrite blueprint.
-7. **Draft** - writes the optimized article package and validates it.
-
-The dashboard is for review. Claude Cowork stays in control of the workflow.
+Instead of stopping at "here are recommendations", the workflow carries the work into an article draft.
 
 ## Granola Example
 
-The repo includes recent test runs against:
+The example run used:
 
 ```text
-https://www.granola.ai/blog
+/blog-optimiser https://www.granola.ai/blog --max-articles 2
 ```
 
-One run processed two Granola posts:
+It processed:
 
 - `Granola Chat just got smarter`
 - `Granola raises $125M to put your company's context to work`
 
-Both ended draft-ready in the run summary.
+### 1. Source Blog Post
 
-### Example 1: Granola Chat Just Got Smarter
-
-Source article:
+The crawler pulled the original Granola Chat article:
 
 ```text
 Title: Granola Chat just got smarter
@@ -110,36 +117,42 @@ Author: Jack
 Opening: Today, we're releasing a much smarter and faster Granola Chat...
 ```
 
-The workflow found that the post was not shaped around the prompts it needed to win:
+The article had useful product information, but it was written like a launch post. It did not directly answer the buyer prompts the brand needed to win.
+
+### 2. Peec-Backed Gap Analysis
+
+The workflow matched the post to 3 tracked prompts and found:
 
 ```json
 {
-  "matched_prompts": 3,
   "chatgpt_visibility": "about 4.5%",
   "perplexity_visibility": "0%",
   "google_ai_overview_visibility": "about 38%",
-  "sentiment_floor": {"engine": "chatgpt-scraper", "value": 59},
+  "chatgpt_sentiment_floor": 59,
   "dominant_content_shape": "LISTICLE",
   "owned_coverage_percent": 0
 }
 ```
 
-It then produced specific recommendations, not generic SEO advice:
+The insight: Granola's own blog post was not competing with the listicles and competitor pages that answer engines already trusted.
+
+### 3. Recommendations
+
+The recommendation agent did not produce vague advice like "improve SEO".
+
+It produced concrete changes:
 
 ```json
 {
-  "id": "rec-012",
   "category": "content_gap",
   "priority": "critical",
   "title": "Add TL;DR block and retrieval-oriented H1 framing",
-  "fix": "Add a 30-60 word TL;DR that states what changed, what it does, and why inline citations make it auditable.",
-  "target_engines": ["chatgpt-scraper", "perplexity-scraper", "google-ai-overview-scraper"]
+  "fix": "Add a 30-60 word TL;DR that states what changed, what it does, and why inline citations make it auditable."
 }
 ```
 
 ```json
 {
-  "id": "rec-014",
   "category": "engine_specific",
   "priority": "high",
   "title": "Address ChatGPT and Perplexity engine asymmetry",
@@ -147,19 +160,29 @@ It then produced specific recommendations, not generic SEO advice:
 }
 ```
 
-The optimized draft started like this:
-
-```markdown
-# Granola Chat just got smarter
-
-By Chris Pedregal, CEO & Co-founder - Granola
-Published 2026-04-21 - Updated 2026-04-25
-
-**TL;DR**
-We've rebuilt Granola Chat from the ground up as an agentic assistant...
+```json
+{
+  "category": "sentiment",
+  "priority": "high",
+  "title": "Fix ChatGPT sentiment floor (59)",
+  "fix": "Replace vague capability language with a specific, differentiated claim about cross-meeting search, Team Space, and inline citations."
+}
 ```
 
-It also added prompt-shaped sections:
+This is the difference: recommendations are based on Peec visibility data, top-cited source patterns, competitor presence, and the article's own structure.
+
+### 4. Optimised Article
+
+The drafting agent then used the recommendations and source article to create a new markdown draft.
+
+It added a clear TL;DR:
+
+```markdown
+**TL;DR**
+We've rebuilt Granola Chat from the ground up as an agentic assistant. It searches across all your meeting notes - personal notes, Team Space, and privately shared notes - and returns answers with inline citations that link to the source meeting. Works with Google Meet, Zoom, and Microsoft Teams.
+```
+
+It also reshaped the article around answer-style sections:
 
 ```markdown
 ## How does Granola Chat search across all your past meetings?
@@ -167,7 +190,11 @@ It also added prompt-shaped sections:
 ## How does Granola turn meeting notes into team knowledge?
 ```
 
-Validation result:
+The output is not just a report. It is an article your content team can review, edit, and publish.
+
+### 5. Validation
+
+The final manifest showed:
 
 ```json
 {
@@ -178,60 +205,7 @@ Validation result:
 }
 ```
 
-### Example 2: Granola Series C
-
-Source article:
-
-```text
-Title: Granola raises $125M to put your company's context to work
-Opening: Today we're announcing our $125M Series C...
-```
-
-The workflow matched this article to seven tracked Peec prompts and found a stronger AI-search gap:
-
-```json
-{
-  "matched_prompts": 7,
-  "chatgpt_visibility": "about 12%",
-  "perplexity_visibility": "about 7%",
-  "google_ai_overview_visibility": "about 51%",
-  "chatgpt_sentiment_floor": 46,
-  "editorial_gatekeepers": ["techtarget.com", "trendharvest.blog", "meetingnotes.com"]
-}
-```
-
-One recommendation:
-
-```json
-{
-  "id": "rec-010",
-  "category": "content_gap",
-  "priority": "critical",
-  "title": "Add TL;DR block and reframe H2 headings as user-prompt mirrors",
-  "fix": "Rename H2s around Spaces, CRM/API workflows, and enterprise compliance controls."
-}
-```
-
-Another recommendation:
-
-```json
-{
-  "id": "rec-016",
-  "category": "claim_synthesis",
-  "priority": "high",
-  "fix": "Open the APIs section with a citable claim about piping meeting context into Salesforce, HubSpot, or any tool."
-}
-```
-
-The optimized article added direct answer sections:
-
-```markdown
-## How Granola Spaces helps teams search across all past meetings
-## How Granola APIs connect meeting context to your CRM and other tools
-## What enterprise compliance controls does Granola include?
-```
-
-Validation result:
+The Series C article went through the same flow and reached:
 
 ```json
 {
@@ -243,9 +217,9 @@ Validation result:
 }
 ```
 
-## What Gets Generated?
+## What You Get Back
 
-Each article gets a folder of usable outputs:
+For each article:
 
 ```text
 outputs/
@@ -262,29 +236,32 @@ outputs/
   rubric/{slug}.json
 ```
 
-Use the files this way:
+The useful files:
 
-- `recommendations/{slug}.json` - see what to change and why
-- `optimised/{slug}.md` - edit or publish the draft
-- `optimised/{slug}.html` - inspect rendered structure and embedded schema
-- `optimised/{slug}.diff.md` - review what changed
-- `optimised/{slug}.handoff.md` - give an editor the action list
-- `optimised/{slug}.manifest.json` - confirm the quality gate passed
+- `recommendations/{slug}.json` - what to change and why
+- `optimised/{slug}.md` - markdown article draft
+- `optimised/{slug}.html` - rendered article with embedded schema
+- `optimised/{slug}.diff.md` - what changed from the source
+- `optimised/{slug}.handoff.md` - editor handoff
+- `optimised/{slug}.manifest.json` - validation and recommendation implementation proof
 
-## What Makes It Useful Weekly?
+## Why Run This Weekly?
 
-The workflow is designed for recurring content ops.
+AI search changes quickly.
 
-Every week you can:
+Competitors get added to roundups. New Reddit threads appear. Product pages get cited. Sentiment shifts. Your own blog might already have the right raw material, but not the right structure.
 
-1. Run the blog again.
-2. See which articles still map to live prompt gaps.
-3. See whether ChatGPT, Perplexity, and Google AI Overview changed behavior.
-4. See which competitor domains and editorial surfaces are still shaping answers.
-5. Refresh drafts with new evidence.
-6. Hand the editorial team a short list of publishable updates.
+This workflow lets a product marketer or content lead run the same process every week:
 
-This matters because AI visibility is not just a rank. It is whether an answer engine selects your brand, explains it correctly, and cites sources that support the story you want buyers to hear.
+1. Crawl the blog.
+2. Reuse the saved brand voice.
+3. Pull fresh Peec visibility data.
+4. Find which owned posts can be improved.
+5. Generate recommendations at scale.
+6. Turn those recommendations into draft articles.
+7. Send markdown and handoff notes to the content team.
+
+That is the core value: not a one-off audit, but a repeatable owned-content optimisation loop.
 
 ## Install And Run
 
@@ -301,7 +278,7 @@ skills/
 references/
 ```
 
-For the latest code, use the source checkout rather than the older ZIP files in `dist/`.
+Use the source checkout for the latest code. The ZIP files in `dist/` are older builds.
 
 ### 2. Connect Peec MCP
 
@@ -338,7 +315,7 @@ Watch for:
 - recommendation count
 - draft-ready vs blocked status
 
-### 5. Run your own weekly workflow
+### 5. Run your own blog
 
 ```text
 /blog-optimiser https://your-company.com/blog --max-articles 20
