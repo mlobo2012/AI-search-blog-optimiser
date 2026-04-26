@@ -175,6 +175,20 @@ def _canonicalize_url(url: str, base_url: str | None = None) -> str:
     ))
 
 
+def _apex_of(host: str) -> str:
+    normalized = (host or "").strip().lower().rstrip(".")
+    parts = normalized.split(".")
+    return ".".join(parts[-2:]) if len(parts) >= 2 else normalized
+
+
+def _is_internal(url: str, canonical_blog_url: str) -> bool:
+    target = urlparse(url).hostname or ""
+    canonical = urlparse(canonical_blog_url).hostname or ""
+    if not target or not canonical:
+        return False
+    return _apex_of(target) == _apex_of(canonical)
+
+
 def _type_names(value: Any) -> set[str]:
     names: set[str] = set()
     if isinstance(value, dict):
@@ -561,8 +575,7 @@ def _schema_summary(schema_data: Any) -> dict[str, Any]:
     }
 
 
-def _source_mix(sources: list[dict[str, Any]], article_url: str) -> tuple[int, int, list[str], list[str]]:
-    article_host = urlparse(article_url).hostname or ""
+def _source_mix(sources: list[dict[str, Any]], canonical_blog_url: str) -> tuple[int, int, list[str], list[str]]:
     internal: list[str] = []
     external: list[str] = []
     for source in sources:
@@ -570,8 +583,7 @@ def _source_mix(sources: list[dict[str, Any]], article_url: str) -> tuple[int, i
         if not raw_url:
             continue
         source_type = str(source.get("source_type", "")).lower()
-        source_host = urlparse(raw_url).hostname or ""
-        if "internal" in source_type or source_host == article_host:
+        if "internal" in source_type or _is_internal(raw_url, canonical_blog_url):
             internal.append(raw_url)
         else:
             external.append(raw_url)
@@ -580,15 +592,14 @@ def _source_mix(sources: list[dict[str, Any]], article_url: str) -> tuple[int, i
     return len(internal), len(external), internal, external
 
 
-def _count_internal_links(snapshot: HTMLSnapshot, article_url: str) -> tuple[int, list[str]]:
-    article_host = urlparse(article_url).hostname or ""
+def _count_internal_links(snapshot: HTMLSnapshot, article_url: str, canonical_blog_url: str) -> tuple[int, list[str]]:
     article_canonical = _canonicalize_url(article_url)
     internal: list[str] = []
     for link in snapshot.links:
         href = _canonicalize_url(link["href"], article_url)
         if not href:
             continue
-        if urlparse(href).hostname != article_host:
+        if not _is_internal(href, canonical_blog_url):
             continue
         if href == article_canonical:
             continue
@@ -789,8 +800,40 @@ def _validate_author(
     return result
 
 
+def _reviewer_display_name(reviewer: dict[str, Any]) -> str:
+    return str(
+        reviewer.get("display_name")
+        or reviewer.get("name")
+        or reviewer.get("full_name")
+        or ""
+    ).strip()
+
+
+def _reviewer_display_role(reviewer: dict[str, Any]) -> str:
+    return str(reviewer.get("display_role") or reviewer.get("role") or "").strip()
+
+
+def _strong_reviewer_from(reviewers: list[dict[str, Any]]) -> dict[str, str] | None:
+    for reviewer in reviewers:
+        if not isinstance(reviewer, dict):
+            continue
+        if reviewer.get("active", True) is not True:
+            continue
+        display_name = _reviewer_display_name(reviewer)
+        display_role = _reviewer_display_role(reviewer)
+        if not _has_first_and_last_name(display_name):
+            continue
+        if not display_role or not _role_is_reviewer_relevant(display_role):
+            continue
+        return {
+            "id": str(reviewer.get("id") or "").strip(),
+            "display_name": display_name,
+            "display_role": display_role,
+        }
+    return None
+
+
 def _validate_trust_block(author_validation: dict[str, Any], reviewers: list[dict[str, Any]]) -> dict[str, Any]:
-    reviewer_id = author_validation.get("reviewer_id")
     author_passed = author_validation.get("status") == "passed"
     display_name = str(author_validation.get("display_name") or "").strip()
     if author_passed and display_name:
@@ -798,6 +841,27 @@ def _validate_trust_block(author_validation: dict[str, Any], reviewers: list[dic
             "passed": True,
             "source": "author_validation",
             "author_name": display_name,
+        }
+    promoted_reviewer = _strong_reviewer_from(reviewers)
+    if promoted_reviewer:
+        source_author_name = display_name or "source author"
+        weak_role = str(author_validation.get("display_role") or "").strip() or "unknown role"
+        author_validation.update({
+            "status": "passed",
+            "display_name": promoted_reviewer["display_name"],
+            "display_role": promoted_reviewer["display_role"],
+            "reviewer_id": promoted_reviewer["id"] or None,
+            "source": "reviewers_promoted",
+            "detail": (
+                f"{source_author_name} rejected as {weak_role}; reviewer "
+                f"{promoted_reviewer['display_name']} ({promoted_reviewer['display_role']}) "
+                "promoted from reviewers.json."
+            ),
+        })
+        return {
+            "passed": True,
+            "source": "reviewers_json",
+            "author_name": promoted_reviewer["display_name"],
         }
     return {
         "passed": False,
@@ -889,14 +953,15 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
     file_schema = _schema_summary(schema_payload)
     html_schema_types = sorted(_type_names(snapshot.jsonld))
     article_url = str(article.get("url", ""))
+    canonical_blog_url = str(state.get("canonical_blog_url") or state.get("blog_url") or article_url)
     intent = _infer_intent(article, recommendations, evidence)
     requirements = _requirements_for(intent, recommendations, evidence)
     internal_source_count, external_source_count, internal_sources, external_sources = _source_mix(
         [item for item in evidence.get("sources", []) if isinstance(item, dict)],
-        article_url,
+        canonical_blog_url,
     )
     inline_evidence_count, matched_claim_ids, referenced_items = _inline_evidence_usage(snapshot, evidence, article_url)
-    internal_link_count, internal_links = _count_internal_links(snapshot, article_url)
+    internal_link_count, internal_links = _count_internal_links(snapshot, article_url, canonical_blog_url)
     author_validation = _validate_author(article, recommendations, reviewers if isinstance(reviewers, list) else [], snapshot, file_schema, intent)
     trust_block = _validate_trust_block(author_validation, reviewers if isinstance(reviewers, list) else [])
     scope_drift = _scope_drift_check(article, recommendations, snapshot)
