@@ -1,8 +1,10 @@
 # AI Search Blog Optimiser
 
+> Available for both Claude Code and Claude Cowork.
+
 ## TL;DR
 
-A Claude Cowork desktop plugin for rewrite-only blog optimisation aimed at AI-search citation. It crawls an existing blog with Firecrawl MCP or Crawl4AI MCP, builds a site-scoped brand voice baseline, generates evidence-grounded recommendations, and either produces an optimised rewrite or blocks the article truthfully in a local report dashboard.
+A Claude Code and Claude Cowork plugin for rewrite-only blog optimisation aimed at AI-search citation. It crawls an existing blog with Firecrawl MCP or Crawl4AI MCP, builds a site-scoped brand voice baseline, generates evidence-grounded recommendations, and either produces an optimised rewrite or blocks the article truthfully in a local report dashboard.
 
 Give AI Search Blog Optimiser a company blog URL. It indexes the blog, learns and reuses the brand voice, reads Peec MCP data, creates GEO recommendations, and uses a writer agent to turn existing posts into optimised articles.
 
@@ -14,7 +16,17 @@ Impact: improve 40, 50, or 100 existing articles with the same evidence-led proc
 
 ## Quick Start
 
-Run this in Claude Cowork:
+### Claude Code
+
+Install the marketplace plugin inside Claude Code:
+
+```text
+/plugin marketplace add mlobo2012/AI-search-blog-optimiser
+/plugin install ai-search-blog-optimiser@ai-heroes-blog-optimiser
+/reload-plugins
+```
+
+Then run:
 
 ```text
 /blog-optimiser https://www.granola.ai/blog --max-articles 3
@@ -42,11 +54,11 @@ When `--article-url` is present, the crawler skips index discovery and processes
 
 The plugin can crawl through either Firecrawl MCP or Crawl4AI MCP:
 
-- Firecrawl MCP is preferred when Claude Cowork exposes a connected tool family with `firecrawl_scrape` and `firecrawl_map`.
+- Firecrawl MCP is preferred when Claude exposes a connected tool family with `firecrawl_scrape` and `firecrawl_map`.
 - Crawl4AI MCP remains supported and is used when Firecrawl is not connected or when a tiny Firecrawl prereq probe fails.
 - MCP server names are discovered by capability. The plugin does not require the Firecrawl server to be named `firecrawl` or the Peec server to be named `peec`.
 
-For Claude Code testing, add Firecrawl with a local private scope:
+For Claude Code, add Firecrawl with a local private scope:
 
 ```bash
 claude mcp add firecrawl -e FIRECRAWL_API_KEY=your-api-key -- npx -y firecrawl-mcp
@@ -59,6 +71,16 @@ For your own blog:
 ```text
 /blog-optimiser https://your-company.com/blog --max-articles 10
 ```
+
+### Claude Cowork
+
+Download the Claude Cowork zip from AI Heroes and install it through the Cowork plugin uploader:
+
+```text
+https://www.ai-heroes.co/en-gb/free-tools/ai-search-blog-optimiser
+```
+
+Then run the same `/blog-optimiser` command from Cowork.
 
 What happens:
 
@@ -181,7 +203,7 @@ It replaces the manual research and rewrite loop with a repeatable GEO workflow 
 
 ## How It Works
 
-You give the Claude Cowork plugin a blog URL and a Peec project ID.
+You give the Claude Code or Claude Cowork plugin a blog URL and a Peec project ID.
 
 It crawls the blog, extracts a reusable site-level brand voice, reads Peec MCP data on visibility gaps, competitors, cited sources, sentiment, and prompts, then generates evidence-grounded recommendations. Run it in batches of 5-10 articles when you want a focused review, or run larger batches when you are ready to work through the whole blog.
 
@@ -321,9 +343,29 @@ That is the core value: not a one-off audit, but a repeatable owned-content opti
 
 ## Install And Run
 
-### 1. Install the plugin from this repo
+### 1. Install the plugin in Claude Code
 
-In Claude Cowork, install this folder as a local plugin. Choose the repo root, the folder that contains:
+Claude Code installs plugins through marketplaces. This repo includes `.claude-plugin/marketplace.json`, so you can add the GitHub repo as a marketplace and install the plugin by name:
+
+```text
+/plugin marketplace add mlobo2012/AI-search-blog-optimiser
+/plugin install ai-search-blog-optimiser@ai-heroes-blog-optimiser
+/reload-plugins
+```
+
+After reload, check `/help` for `/blog-optimiser`.
+
+### 2. Install the plugin in Claude Cowork
+
+Claude Cowork uses the desktop plugin upload flow. Download the latest Cowork zip from:
+
+```text
+https://www.ai-heroes.co/en-gb/free-tools/ai-search-blog-optimiser
+```
+
+Upload the zip in Cowork, enable the plugin, then connect the required MCP servers.
+
+You can also install this source checkout as a local plugin during development. Choose the repo root, the folder that contains:
 
 ```text
 .claude-plugin/plugin.json
@@ -336,9 +378,9 @@ references/
 
 Use the source checkout for the latest code, or use the latest `dist/ai-search-blog-optimiser-v0.7.0-cowork.zip` package for a Cowork zip install.
 
-### 2. Connect Peec MCP
+### 3. Connect Peec MCP
 
-Add the Peec MCP server to Claude/Cowork:
+Add the Peec MCP server to Claude Code or Claude Cowork:
 
 ```text
 https://api.peec.ai/mcp
@@ -353,11 +395,11 @@ The plugin expects a Peec project with:
 - tracked prompts
 - at least one day of Peec data
 
-### 3. Make Firecrawl or Crawl4AI available
+### 4. Make Firecrawl MCP or Crawl4AI MCP available
 
 The workflow prefers Firecrawl MCP for discovery and page fetches when Claude exposes `firecrawl_map` and `firecrawl_scrape`. Crawl4AI MCP remains supported as the fallback crawler. If neither crawler is connected, the command stops during prereqs before creating a run.
 
-### 4. Run the Granola example
+### 5. Run the Granola example
 
 ```text
 /blog-optimiser https://www.granola.ai/blog --max-articles 3
@@ -371,7 +413,7 @@ Watch for:
 - recommendation count
 - ready vs blocked status
 
-### 5. Run your own blog
+### 6. Run your own blog
 
 ```text
 /blog-optimiser https://your-company.com/blog --max-articles 10

@@ -1,0 +1,24 @@
+{
+  "name": "ai-heroes-blog-optimiser",
+  "owner": {
+    "name": "AI Heroes",
+    "email": "hello@ai-heroes.co"
+  },
+  "metadata": {
+    "description": "AI Heroes plugins for AI search and GEO blog optimisation.",
+    "version": "0.7.0"
+  },
+  "plugins": [
+    {
+      "name": "ai-search-blog-optimiser",
+      "source": {
+        "source": "github",
+        "repo": "mlobo2012/AI-search-blog-optimiser"
+      },
+      "description": "Multi-agent blog optimiser for AI search. Crawls a blog, extracts brand voice, reads Peec AI gaps, benchmarks against cited competitors, and rewrites articles with evidence-grounded recommendations.",
+      "version": "0.7.0",
+      "category": "marketing",
+      "tags": ["ai-search", "geo", "seo", "blog", "peec"]
+    }
+  ]
+}
