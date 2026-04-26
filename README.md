@@ -1,240 +1,358 @@
 # AI Search Blog Optimiser
 
-## What problem does this solve?
+Turn a blog URL into AI-search-ready article rewrites.
 
-AI Search Blog Optimiser turns an existing blog into AI-search-ready content. It is a Claude Cowork desktop plugin for content teams that want their articles to show up when people ask ChatGPT, Perplexity, Google AI Overview, and similar answer engines about their category.
+This is a Claude Cowork plugin for teams that want to run a weekly AI visibility workflow without manually copying prompts, citations, competitor mentions, recommendations, drafts, schemas, and QA notes between tools.
 
-Most blog posts were written for readers and Google. AI answer engines need something stricter:
+## What Problem Does This Solve?
 
-- clear answers to real user prompts
-- named evidence and sources
-- author and reviewer trust signals
-- structured sections, FAQ, schema, and internal links
-- language that matches the prompts where the brand is currently missing
-- proof that every recommendation made it into the final draft
+Teams are starting to check whether ChatGPT, Perplexity, Google AI Overview, Gemini, Claude, and Copilot mention their brand when buyers ask category questions.
 
-This workflow gives content teams a repeatable way to move from "we are invisible in ChatGPT or Perplexity for these prompts" to "this article now contains the evidence, structure, and language needed to compete."
+The manual workflow is painful:
 
-## How does it work?
+1. Pick 10-20 high-intent prompts buyers might ask.
+2. Run those prompts across multiple AI engines.
+3. Log whether your brand appears.
+4. Log which competitors appear instead.
+5. Open the sources each engine cites.
+6. Work out why those sources are being trusted.
+7. Turn the gap into an article brief.
+8. Rewrite the article without making unsupported claims.
+9. Add schema, FAQ, evidence, links, trust blocks, and source citations.
+10. Check whether the rewrite actually implemented the recommendations.
+11. Repeat next week, because AI answers move.
 
-Run one command with a blog URL. The plugin crawls your blog, reads your live Peec AI visibility gaps, finds the sources and competitors that answer engines already trust, then rewrites each article with evidence-backed recommendations. If the article cannot be improved honestly, it blocks the draft and tells you why.
+That work usually lands across SEO teams, content teams, product marketing, PR, and agencies. Monitoring tools can show the gap. The hard part is turning the gap into a usable content update every week.
+
+AI Search Blog Optimiser closes that loop.
+
+Give it a blog URL. It crawls the blog, reads live Peec AI data, finds the prompts and sources where the brand is losing, creates recommendations, writes optimized article drafts, and blocks anything that cannot be supported honestly.
+
+The value is speed and repeatability: instead of spending a day collecting screenshots, copying citations, briefing a writer, and QA-ing the result, you can run the workflow weekly and get draft-ready article packages plus a clear report of what still needs human input.
+
+## Quick Start
+
+Run the workflow from Claude Cowork:
 
 ```text
-/blog-optimiser https://your-blog.com/blog [--refresh-voice] [--resume {run_id}] [--max-articles N]
+/blog-optimiser https://www.granola.ai/blog --max-articles 2
 ```
 
-The plugin then runs a seven-stage workflow:
+Expected result:
 
-1. **Prereqs** - confirms Peec MCP and Crawl4AI are available before opening anything.
-2. **Crawl** - discovers real article URLs from the blog index and saves article captures.
+- a local dashboard opens for the run
+- the plugin crawls the Granola blog
+- each article gets Peec-backed gap analysis
+- each article gets recommendations
+- each article gets an optimized markdown draft, HTML draft, schema, diff, handoff doc, and validation manifest
+- `run-summary.md` tells you which articles are draft-ready and which are blocked
+
+Use this for your own site:
+
+```text
+/blog-optimiser https://your-company.com/blog --max-articles 10
+```
+
+Run it every week:
+
+```text
+/blog-optimiser https://your-company.com/blog --max-articles 20
+```
+
+Resume a previous run:
+
+```text
+/blog-optimiser --resume 2026-04-25T19-21-10
+```
+
+Refresh the brand voice baseline:
+
+```text
+/blog-optimiser https://your-company.com/blog --refresh-voice
+```
+
+## How Does It Work?
+
+The workflow has seven stages.
+
+1. **Prereqs** - checks that Peec MCP and Crawl4AI are available.
+2. **Crawl** - discovers real article URLs from the blog index.
 3. **Voice** - builds or reuses a site-level brand voice baseline.
-4. **Analysis** - matches each article to Peec prompts, topics, source gaps, and engine performance.
-5. **Evidence** - gathers the claims, citations, reviewers, and competitor examples the rewrite is allowed to use.
-6. **Recommendations** - creates a compact rewrite blueprint from Peec data, deterministic lint results, and competitor evidence.
-7. **Draft** - writes markdown, HTML, schema, diff, handoff notes, and a validator manifest.
+4. **Analysis** - matches articles to Peec prompts, AI engines, source gaps, and competitor citations.
+5. **Evidence** - gathers claims, source URLs, reviewer candidates, and internal link options.
+6. **Recommendations** - turns the gap data into a rewrite blueprint.
+7. **Draft** - writes the optimized article package and validates it.
 
-The dashboard opens after a run is registered and stays a report surface. Claude Cowork remains the control surface.
+The dashboard is for review. Claude Cowork stays in control of the workflow.
 
-## What you get
+## Granola Example
 
-For every article, the run writes:
-
-- the original article capture
-- a Peec gap artifact with matched prompts, engine visibility, source gaps, sentiment, and citation patterns
-- an evidence pack with allowed claims, source URLs, reviewer candidates, and internal link candidates
-- a recommendation artifact with category, brand, and competition lenses
-- an optimized markdown article
-- rendered HTML with embedded JSON-LD
-- standalone schema JSON
-- a diff against the source article
-- a handoff document for editors
-- a manifest showing which recommendations were implemented and whether the quality gate passed
-
-At the end, `run-summary.md` reports how many articles were draft-ready and how many were blocked.
-
-## Example runs
-
-Recent verification runs used `https://www.granola.ai/blog`, whose blog index is simple, current, and product-led. That made it a useful test case for the optimiser: the source articles were real launch and funding posts, not synthetic fixtures.
-
-### Granola Chat article
-
-The run matched `Granola Chat just got smarter` to 3 Peec prompts. The recommender found that Granola had roughly 4.5% ChatGPT visibility, 0% Perplexity visibility, and stronger Google AI Overview presence for the matched prompt set.
-
-The workflow turned that into engine-specific recommendations: question-style H2s, FAQ coverage, named product proof, reviewer trust, and off-page actions for the editorial listicles answer engines were already citing. The final manifest implemented 17 recommendations, added FAQ schema, embedded JSON-LD, used 3 inline evidence references, and passed the quality gate.
-
-### Series C article
-
-The run matched `Granola raises $125M to put your company's context to work` to 7 Peec prompts. It found a sharper gap: ChatGPT sentiment floor at 46, Perplexity dark on most matched prompts, and editorial roundups such as TechTarget and TrendHarvest acting as citation gatekeepers.
-
-The optimiser rebuilt the article around the prompts Granola needed to win: team knowledge, CRM workflows, no-bot privacy, meeting use cases, and enterprise trust. The final manifest reached an `audit_after` score of 34/40, implemented 17 recommendations, added 5 inline evidence references, generated FAQ schema that matched visible FAQ questions, and passed the quality gate.
-
-## Current capabilities
-
-### Peec-first gap analysis
-
-The workflow requires Peec for fresh runs. It discovers the connected Peec MCP by capability, not by server name, so Cowork installations with UUID-style MCP prefixes still work.
-
-For each article it prefers prompt-level evidence:
-
-- matched prompts and topics
-- brand visibility per engine
-- share of voice, position, sentiment, and citation score per engine
-- domains and URLs answer engines cite when competitors appear and your brand does not
-- recent AI responses used as gap excerpts
-- Peec action opportunities for owned, editorial, reference, and UGC surfaces
-
-If no direct prompt match exists, the gap reader falls back to topic-level signals instead of producing a generic rewrite.
-
-### Recommendation engine
-
-The v0.6 recommendation engine produces more than a checklist. It builds:
-
-- `category_lens` - where this article sits in the topic cluster and which source formats dominate
-- `brand_lens` - which engines are strong, weak, dark, or low-sentiment
-- `competition_lens` - which competitors, publishers, corporate sites, UGC sources, or reference domains shape the answer
-- `engine_gap_strategy` - per-engine levers for ChatGPT, Perplexity, and Google AI Overview
-- `primary_gaps` - the missing prompt language and evidence
-- `off_page_actions` - actions outside the article when Peec shows a citation-surface gap
-- `synthesis_claims` - grouped claims that address multiple prompts at once
-
-It emits 3-8 LLM-source recommendations in Peec modes, plus deterministic rubric items and off-page actions where relevant.
-
-### Deterministic lint and quality gate
-
-The dashboard runtime owns the hard checks. It can block an article even if the generator sounds confident.
-
-The validator checks:
-
-- visible TL;DR
-- full-name trust block with role and date signals
-- question-format headings when the recommendation set requires them
-- atomic paragraphs and chunk-complete sections
-- inline evidence
-- semantic HTML
-- differentiation
-- JSON-LD embedded in the HTML
-- FAQ visibility and FAQ schema alignment
-- internal links, including subdomains of the canonical site
-- recommendation implementation coverage
-- scope drift
-- minimum `audit_after` score of 32/40 when scoring is available
-
-The manifest cross-checks every critical recommendation against `rec_implementation_map`. A brilliant recommendation that never appears in the draft is a failed article, not a success.
-
-### Evidence and trust handling
-
-The workflow keeps trust explicit:
-
-- source authors pass when they have a credible full name and role
-- first-name authors can pass only when a substantive role is present
-- site-level reviewers can be promoted when the source byline is weak
-- reviewer provenance is preserved in `author_validation`
-- the visible trust block and validator state must agree
-- articles can block when there are not enough external sources
-
-This is why the system sometimes returns a blocked article. A blocked article is useful. It tells the editor what proof is missing instead of shipping made-up confidence.
-
-### Dashboard and storage
-
-The dashboard is a local report view with run history and per-article status. It does not own the orchestration.
-
-Writable root selection:
-
-- `CLAUDE_PLUGIN_DATA` when Cowork provides it
-- platform fallback roots otherwise
-- `BLOG_OPTIMISER_DATA_ROOT` for tests and local debugging
-
-Default fallback roots:
-
-- macOS: `~/Library/Application Support/ai-search-blog-optimiser/v3`
-- Linux: `~/.local/share/ai-search-blog-optimiser/v3`
-- Windows: `%APPDATA%\ai-search-blog-optimiser\v3`
-
-When `CLAUDE_PLUGIN_DATA` is used, the runtime imports legacy default-root data once if the new plugin data directory is empty. Set `BLOG_OPTIMISER_SKIP_LEGACY_IMPORT=1` to disable that import during tests or debugging.
-
-Layout:
+The repo includes recent test runs against:
 
 ```text
-v3/
-  runs/{run_id}/
-    state.json
-    gates.json
-    run-summary.md
-    outputs/
-      articles/
-      evidence/
-      recommendations/
-      optimised/
-      media/
-      raw/
-      gaps/
-      competitors/
-      peec-cache/
-      rubric/
-  sites/{site_key}/
-    brand-voice.md
-    voice.json
-    reviewers.json
-  dashboard.lock
+https://www.granola.ai/blog
 ```
 
-## Runtime rules
+One run processed two Granola posts:
 
-- The main Claude session is the orchestrator.
-- Sub-agents are leaf workers for crawl, voice, evidence, recommendations, and draft generation.
-- `register_run` must happen before `open_dashboard`.
-- `register_run` requires `peec_project_id`.
-- `open_dashboard` requires a concrete `run_id`.
-- `get_paths` is deprecated for normal orchestration.
-- `state.json` is the source of truth.
-- Same-site voice reuse is automatic unless `--refresh-voice` is set.
-- Core writes use typed dashboard MCP tools so artifact persistence and state updates happen together.
-- `write_json_artifact` accepts raw JSON objects or arrays; the runtime normalizes accidentally stringified JSON for backward compatibility.
-- Peec failures block the relevant run or article instead of silently downgrading to a generic GEO rewrite.
+- `Granola Chat just got smarter`
+- `Granola raises $125M to put your company's context to work`
 
-## Embedded dashboard MCP tools
+Both ended draft-ready in the run summary.
 
-Core orchestration:
+### Example 1: Granola Chat Just Got Smarter
 
-- `register_run`
-- `open_dashboard`
-- `get_dashboard_url`
-- `update_state`
-- `list_runs`
-- `show_banner`
+Source article:
 
-Run artifacts:
+```text
+Title: Granola Chat just got smarter
+Author: Jack
+Opening: Today, we're releasing a much smarter and faster Granola Chat...
+```
 
-- `record_crawl_discovery`
-- `record_crawled_article`
-- `finalize_crawl`
-- `record_voice_baseline`
-- `record_peec_gap`
-- `record_competitor_snapshot`
-- `record_evidence_pack`
-- `rubric_lint`
-- `record_recommendations`
-- `record_draft_package`
-- `fail_article_stage`
-- `finalize_run_report`
+The workflow found that the post was not shaped around the prompts it needed to win:
 
-Validation and review:
+```json
+{
+  "matched_prompts": 3,
+  "chatgpt_visibility": "about 4.5%",
+  "perplexity_visibility": "0%",
+  "google_ai_overview_visibility": "about 38%",
+  "sentiment_floor": {"engine": "chatgpt-scraper", "value": 59},
+  "dominant_content_shape": "LISTICLE",
+  "owned_coverage_percent": 0
+}
+```
 
-- `validate_article`
-- `validate_run`
-- `set_gate`
-- `get_gates`
+It then produced specific recommendations, not generic SEO advice:
 
-Artifact helpers:
+```json
+{
+  "id": "rec-012",
+  "category": "content_gap",
+  "priority": "critical",
+  "title": "Add TL;DR block and retrieval-oriented H1 framing",
+  "fix": "Add a 30-60 word TL;DR that states what changed, what it does, and why inline citations make it auditable.",
+  "target_engines": ["chatgpt-scraper", "perplexity-scraper", "google-ai-overview-scraper"]
+}
+```
 
-- `get_artifact_path`
-- `list_artifacts`
-- `read_text_artifact`
-- `read_json_artifact`
-- `read_bundle_text`
-- `write_text_artifact`
-- `write_json_artifact`
-- `download_media_asset`
+```json
+{
+  "id": "rec-014",
+  "category": "engine_specific",
+  "priority": "high",
+  "title": "Address ChatGPT and Perplexity engine asymmetry",
+  "fix": "Add a 'Who it is for' or 'Works with' section stating Google Meet, Zoom, and Microsoft Teams."
+}
+```
+
+The optimized draft started like this:
+
+```markdown
+# Granola Chat just got smarter
+
+By Chris Pedregal, CEO & Co-founder - Granola
+Published 2026-04-21 - Updated 2026-04-25
+
+**TL;DR**
+We've rebuilt Granola Chat from the ground up as an agentic assistant...
+```
+
+It also added prompt-shaped sections:
+
+```markdown
+## How does Granola Chat search across all your past meetings?
+## Who is Granola Chat for - and which meeting platforms does it support?
+## How does Granola turn meeting notes into team knowledge?
+```
+
+Validation result:
+
+```json
+{
+  "quality_gate": "passed",
+  "recommendations_implemented": 17,
+  "inline_evidence_count": 3,
+  "schema": ["BlogPosting", "BreadcrumbList", "FAQPage", "Organization", "Person"]
+}
+```
+
+### Example 2: Granola Series C
+
+Source article:
+
+```text
+Title: Granola raises $125M to put your company's context to work
+Opening: Today we're announcing our $125M Series C...
+```
+
+The workflow matched this article to seven tracked Peec prompts and found a stronger AI-search gap:
+
+```json
+{
+  "matched_prompts": 7,
+  "chatgpt_visibility": "about 12%",
+  "perplexity_visibility": "about 7%",
+  "google_ai_overview_visibility": "about 51%",
+  "chatgpt_sentiment_floor": 46,
+  "editorial_gatekeepers": ["techtarget.com", "trendharvest.blog", "meetingnotes.com"]
+}
+```
+
+One recommendation:
+
+```json
+{
+  "id": "rec-010",
+  "category": "content_gap",
+  "priority": "critical",
+  "title": "Add TL;DR block and reframe H2 headings as user-prompt mirrors",
+  "fix": "Rename H2s around Spaces, CRM/API workflows, and enterprise compliance controls."
+}
+```
+
+Another recommendation:
+
+```json
+{
+  "id": "rec-016",
+  "category": "claim_synthesis",
+  "priority": "high",
+  "fix": "Open the APIs section with a citable claim about piping meeting context into Salesforce, HubSpot, or any tool."
+}
+```
+
+The optimized article added direct answer sections:
+
+```markdown
+## How Granola Spaces helps teams search across all past meetings
+## How Granola APIs connect meeting context to your CRM and other tools
+## What enterprise compliance controls does Granola include?
+```
+
+Validation result:
+
+```json
+{
+  "quality_gate": "passed",
+  "audit_after": 34,
+  "recommendations_implemented": 17,
+  "inline_evidence_count": 5,
+  "faq_questions": 5
+}
+```
+
+## What Gets Generated?
+
+Each article gets a folder of usable outputs:
+
+```text
+outputs/
+  articles/{slug}.json
+  gaps/{slug}.json
+  evidence/{slug}.json
+  recommendations/{slug}.json
+  optimised/{slug}.md
+  optimised/{slug}.html
+  optimised/{slug}.schema.json
+  optimised/{slug}.diff.md
+  optimised/{slug}.handoff.md
+  optimised/{slug}.manifest.json
+  rubric/{slug}.json
+```
+
+Use the files this way:
+
+- `recommendations/{slug}.json` - see what to change and why
+- `optimised/{slug}.md` - edit or publish the draft
+- `optimised/{slug}.html` - inspect rendered structure and embedded schema
+- `optimised/{slug}.diff.md` - review what changed
+- `optimised/{slug}.handoff.md` - give an editor the action list
+- `optimised/{slug}.manifest.json` - confirm the quality gate passed
+
+## What Makes It Useful Weekly?
+
+The workflow is designed for recurring content ops.
+
+Every week you can:
+
+1. Run the blog again.
+2. See which articles still map to live prompt gaps.
+3. See whether ChatGPT, Perplexity, and Google AI Overview changed behavior.
+4. See which competitor domains and editorial surfaces are still shaping answers.
+5. Refresh drafts with new evidence.
+6. Hand the editorial team a short list of publishable updates.
+
+This matters because AI visibility is not just a rank. It is whether an answer engine selects your brand, explains it correctly, and cites sources that support the story you want buyers to hear.
+
+## Install And Run
+
+### 1. Install the plugin from this repo
+
+In Claude Cowork, install this folder as a local plugin. Choose the repo root, the folder that contains:
+
+```text
+.claude-plugin/plugin.json
+commands/blog-optimiser.md
+dashboard/server.py
+agents/
+skills/
+references/
+```
+
+For the latest code, use the source checkout rather than the older ZIP files in `dist/`.
+
+### 2. Connect Peec MCP
+
+Add the Peec MCP server to Claude/Cowork:
+
+```text
+https://api.peec.ai/mcp
+```
+
+Use Streamable HTTP transport and sign in through Peec OAuth when prompted.
+
+The plugin expects a Peec project with:
+
+- own brand configured
+- competitors configured
+- tracked prompts
+- at least one day of Peec data
+
+### 3. Make Crawl4AI available
+
+The workflow uses Crawl4AI to fetch blog pages. If Crawl4AI is not connected, the command stops during prereqs before creating a run.
+
+### 4. Run the Granola example
+
+```text
+/blog-optimiser https://www.granola.ai/blog --max-articles 2
+```
+
+Watch for:
+
+- local dashboard URL
+- `run_id`
+- article crawl count
+- recommendation count
+- draft-ready vs blocked status
+
+### 5. Run your own weekly workflow
+
+```text
+/blog-optimiser https://your-company.com/blog --max-articles 20
+```
+
+Then review:
+
+```text
+run-summary.md
+outputs/recommendations/
+outputs/optimised/
+```
+
+If an article is blocked, read the reason first. A blocked article usually means the system could not find enough evidence, trust, or source support to ship a defensible rewrite.
 
 ## Development
 
@@ -253,7 +371,7 @@ python3 -m py_compile dashboard/server.py
 Useful files:
 
 - `commands/blog-optimiser.md` - slash-command entrypoint
-- `skills/blog-optimiser-pipeline/SKILL.md` - canonical orchestration playbook
+- `skills/blog-optimiser-pipeline/SKILL.md` - orchestration playbook
 - `skills/peec-gap-read/SKILL.md` - Peec gap-read recipe
 - `references/geo-article-contract.md` - article quality contract
 - `dashboard/server.py` - local dashboard MCP runtime
