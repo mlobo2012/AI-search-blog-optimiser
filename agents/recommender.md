@@ -65,6 +65,18 @@ recommendations. If `mode == "voice-rubric"`, emit 2-6 LLM-source recommendation
 items are additional and do not count toward the LLM-source budget. Off-page recs are additional
 to the on-page budget, capped at 4.
 
+**Recommendation count discipline.** For `peec-prompt-matched` articles, generate exactly 3-8
+LLM-source recommendations (inclusive). Do NOT generate 9 or more. If you have more than 8
+candidate recs, MERGE the two lowest-priority candidates into a single composite rec, or DROP the
+lowest-priority candidate. The validator enforces this bound and will reject and retry if you exceed
+it — saving the retry cycle is worth a bit of merging.
+
+**`addresses_prompts` minimum.** Every recommendation MUST address at least 3 prompt ids in its
+`addresses_prompts` array. If a rec is targeting a single specific prompt, find 2 related prompts
+that the same rec also helps (e.g., adjacent prompts in the same topic cluster, or prompts in the
+same engine where the rec applies broadly). If you cannot find 3 related prompts for a candidate
+rec, drop the rec — it is too narrow to be cost-effective.
+
 ## Signal Enum
 
 Every LLM-source recommendation must cite at least one of these signal values in `signal_types`.
