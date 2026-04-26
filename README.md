@@ -4,9 +4,11 @@
 
 Give AI Search Blog Optimiser a company blog URL. It indexes the blog, learns and reuses the brand voice, reads Peec MCP data, creates GEO recommendations, and uses a writer agent to turn existing posts into optimised articles.
 
-It is built for regular GEO blog optimisation: review owned content every 2-4 weeks, identify which posts are falling behind competitors or missing from AI answers, and refresh the pages that can win back visibility.
+Most company blogs were written for Google search, not for AI answers, citations, and prompt-shaped buyer questions. AI Search Blog Optimiser helps product marketers, SEO teams, SEO/GEO agencies, and content leads migrate existing owned content forward into GEO.
 
-Impact: turn an existing blog into a repeatable AI-search optimisation loop, so product marketers and content teams can improve 40, 50, or 100 articles with the same process instead of doing one-off audits.
+It turns manual AI-search research and rewriting into a repeatable optimisation loop: review owned content every 2-4 weeks, identify which posts are falling behind competitors or missing from AI answers, and refresh the pages that can win back visibility.
+
+Impact: improve 40, 50, or 100 existing articles with the same evidence-led process so the blog stays current with the category, what is working for the brand, and what is working for the competition.
 
 ## Quick Start
 
@@ -35,9 +37,11 @@ What happens:
 
 ## What Problem Does This Solve?
 
-Owned content matters for AI search, but most company blogs were not written for answer engines.
+Most company blogs were written for Google search, not for AI answers, citations, and prompt-shaped buyer questions.
 
-Product marketers, content teams, SEO teams, PR teams, and agencies now have to answer questions like:
+AI Search Blog Optimiser is for product marketers, SEO teams, SEO/GEO agencies, and content leads who need to migrate existing owned content forward into GEO and keep blog posts visible in AI search.
+
+Teams currently have to manually inspect where their brand appears, which competitors are mentioned instead, which sources AI engines trust, and what each article is missing. Product marketers, content teams, SEO teams, PR teams, and agencies now have to answer questions like:
 
 - Are we mentioned when buyers ask ChatGPT or Perplexity about our category?
 - Which competitors are being cited instead?
@@ -47,7 +51,7 @@ Product marketers, content teams, SEO teams, PR teams, and agencies now have to 
 
 Doing this manually is slow.
 
-The work usually looks like this:
+Instead of manually checking ChatGPT, Perplexity, Gemini, Claude, and Google AI results, inspecting where the brand appears, which competitors are mentioned instead, which sources AI engines trust, and what each article is missing, the work usually looks like this:
 
 1. Run buyer prompts across ChatGPT, Perplexity, Google AI Overview, Gemini, Claude, and Copilot.
 2. Capture which brands appear and which sources get cited.
@@ -64,13 +68,15 @@ That may be manageable for one or two posts. It breaks down across 40, 50, or 10
 
 AI Search Blog Optimiser automates the upstream work: crawling your pages, reading Peec research, comparing against competitor and top-cited pages, generating recommendations, and then passing those recommendations into a writer agent that creates the optimised article.
 
-It is a workflow for repurposing what you already own.
+It replaces the manual research and rewrite loop with a repeatable GEO workflow for existing owned content. It helps teams refresh existing articles so the blog stays current with the category, what is working for the brand, and what is working for the competition.
 
 ## How It Works
 
-You give it the blog URL.
+You give the Claude Cowork plugin a blog URL and a Peec project ID.
 
-The crawler indexes the blog and pulls article content. Run it in batches of 5-10 articles when you want a focused review, or run larger batches when you are ready to work through the whole blog.
+It crawls the blog, extracts a reusable site-level brand voice, reads Peec MCP data on visibility gaps, competitors, cited sources, sentiment, and prompts, then generates evidence-grounded recommendations. Run it in batches of 5-10 articles when you want a focused review, or run larger batches when you are ready to work through the whole blog.
+
+A writer agent turns those recommendations into GEO-optimised article packages with answer-first TL;DRs, prompt-shaped headings, trust blocks, semantic structure, internal links, FAQ/schema coverage, inline evidence, markdown, HTML, standalone schema, diffs, handoff notes, and a quality manifest ready for your content team to review and integrate.
 
 Then the workflow runs in stages:
 
@@ -79,12 +85,12 @@ Then the workflow runs in stages:
 3. **Read Peec MCP gaps** - pulls the relevant Peec project, tracked prompts, AI engine visibility, share of voice, sentiment, ranking position, competitor mentions, cited domains, source gaps, AI response excerpts, and Peec action opportunities.
 4. **Build evidence** - gathers the claims, sources, reviewer signals, and internal links the rewrite is allowed to use.
 5. **Generate recommendations** - creates a practical optimisation plan: TL;DR, prompt-shaped headings, missing claims, source-backed evidence, internal links, FAQ/schema, trust block, sentiment fixes, engine-specific tactics, and off-page or comparison-page opportunities where Peec shows a gap.
-6. **Create the optimised article** - the writer agent turns the recommendation list and original article into a new article with better semantics, structure, content language, evidence placement, and schema.
-7. **Check the article package** - confirms schema, FAQ coverage, evidence, trust signals, internal links, recommendation coverage, and quality gate status.
+6. **Create the optimised article** - the writer agent turns the recommendation list and original article into a GEO-optimised article package with better semantics, structure, content language, evidence placement, internal links, and schema.
+7. **Check the article package** - confirms schema, FAQ coverage, evidence, trust signals, internal links, recommendation coverage, quality gate status, and the handoff assets your content team can review and integrate.
 
 The important part is the waterfall: blog URL in, articles crawled, brand voice generated or reused, Peec MCP visibility gaps read, cited competitors and sources compared, recommendations generated, writer agent creates the optimised article, content team gets the handoff.
 
-Instead of stopping at "here are recommendations", the workflow carries the work into an optimised article package.
+Instead of stopping at "here are recommendations", the workflow carries the work into an optimised article package with markdown, HTML, standalone schema, diffs, handoff notes, and a pass/block quality manifest.
 
 ## Granola Example
 
