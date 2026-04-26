@@ -175,6 +175,20 @@ def _canonicalize_url(url: str, base_url: str | None = None) -> str:
     ))
 
 
+def _apex_of(host: str) -> str:
+    normalized = (host or "").strip().lower().rstrip(".")
+    parts = normalized.split(".")
+    return ".".join(parts[-2:]) if len(parts) >= 2 else normalized
+
+
+def _is_internal(url: str, canonical_blog_url: str) -> bool:
+    target = urlparse(url).hostname or ""
+    canonical = urlparse(canonical_blog_url).hostname or ""
+    if not target or not canonical:
+        return False
+    return _apex_of(target) == _apex_of(canonical)
+
+
 def _type_names(value: Any) -> set[str]:
     names: set[str] = set()
     if isinstance(value, dict):
@@ -561,8 +575,7 @@ def _schema_summary(schema_data: Any) -> dict[str, Any]:
     }
 
 
-def _source_mix(sources: list[dict[str, Any]], article_url: str) -> tuple[int, int, list[str], list[str]]:
-    article_host = urlparse(article_url).hostname or ""
+def _source_mix(sources: list[dict[str, Any]], canonical_blog_url: str) -> tuple[int, int, list[str], list[str]]:
     internal: list[str] = []
     external: list[str] = []
     for source in sources:
@@ -570,8 +583,7 @@ def _source_mix(sources: list[dict[str, Any]], article_url: str) -> tuple[int, i
         if not raw_url:
             continue
         source_type = str(source.get("source_type", "")).lower()
-        source_host = urlparse(raw_url).hostname or ""
-        if "internal" in source_type or source_host == article_host:
+        if "internal" in source_type or _is_internal(raw_url, canonical_blog_url):
             internal.append(raw_url)
         else:
             external.append(raw_url)
@@ -580,15 +592,14 @@ def _source_mix(sources: list[dict[str, Any]], article_url: str) -> tuple[int, i
     return len(internal), len(external), internal, external
 
 
-def _count_internal_links(snapshot: HTMLSnapshot, article_url: str) -> tuple[int, list[str]]:
-    article_host = urlparse(article_url).hostname or ""
+def _count_internal_links(snapshot: HTMLSnapshot, article_url: str, canonical_blog_url: str) -> tuple[int, list[str]]:
     article_canonical = _canonicalize_url(article_url)
     internal: list[str] = []
     for link in snapshot.links:
         href = _canonicalize_url(link["href"], article_url)
         if not href:
             continue
-        if urlparse(href).hostname != article_host:
+        if not _is_internal(href, canonical_blog_url):
             continue
         if href == article_canonical:
             continue
@@ -942,14 +953,15 @@ def build_article_manifest(run_dir: Path, article_slug: str, audit_after: int | 
     file_schema = _schema_summary(schema_payload)
     html_schema_types = sorted(_type_names(snapshot.jsonld))
     article_url = str(article.get("url", ""))
+    canonical_blog_url = str(state.get("canonical_blog_url") or state.get("blog_url") or article_url)
     intent = _infer_intent(article, recommendations, evidence)
     requirements = _requirements_for(intent, recommendations, evidence)
     internal_source_count, external_source_count, internal_sources, external_sources = _source_mix(
         [item for item in evidence.get("sources", []) if isinstance(item, dict)],
-        article_url,
+        canonical_blog_url,
     )
     inline_evidence_count, matched_claim_ids, referenced_items = _inline_evidence_usage(snapshot, evidence, article_url)
-    internal_link_count, internal_links = _count_internal_links(snapshot, article_url)
+    internal_link_count, internal_links = _count_internal_links(snapshot, article_url, canonical_blog_url)
     author_validation = _validate_author(article, recommendations, reviewers if isinstance(reviewers, list) else [], snapshot, file_schema, intent)
     trust_block = _validate_trust_block(author_validation, reviewers if isinstance(reviewers, list) else [])
     scope_drift = _scope_drift_check(article, recommendations, snapshot)
