@@ -2,6 +2,30 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.6.4] — 2026-04-26
+
+Iteration 7 single-bug pre-emptive fix from Codex GPT-5.5 static audit
+`specs/2026-04-26-iter7-static-audit.md` (R2 finding). The latent branch was
+closed before Round 5 stress-test rotation could surface a YELLOW for
+non-canonical reviewer-backed articles.
+
+### Lane J — validator (dashboard/quality_gate.py)
+- **Bug 18** — `_validate_trust_block` now always reports
+  `trust_block.source == "author_validation"` whenever
+  `author_validation.status == "passed"` and `display_name` is non-empty.
+  Previously it wrote `trust_block.source = "reviewers_json"` when
+  `reviewer_id` was non-null, despite author validation already being the
+  accepted source of truth. Reviewer provenance remains preserved in
+  `author_validation.reviewer_id`.
+
+### Acceptance test
+- tests/bug_18_trust_block_source_consistency_test.md (Lane J)
+
+### Origin
+Codex GPT-5.5 static audit
+`specs/2026-04-26-iter7-static-audit.md` (R2 finding) — pre-empted before
+Round 5 stress-test rotation could surface YELLOW.
+
 ## [0.6.3] — 2026-04-25
 
 Iteration 6 single-bug fix from the v0.6.2 smoke run `2026-04-25T21-32-17`
