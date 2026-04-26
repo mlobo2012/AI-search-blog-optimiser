@@ -75,6 +75,12 @@ QUESTION_HEADING_WORD_RE = re.compile(
     r"^(which|how|what|why|when|where|who|can|does|is|are|should)\b",
     re.IGNORECASE,
 )
+VISIBLE_REVIEWER_PREFIX_RE = re.compile(
+    r"^(?:(?:reviewed|edited|verified)\s+by\b|reviewer\s*:)\s*",
+    re.IGNORECASE,
+)
+VISIBLE_BYLINE_PREFIX_RE = re.compile(r"^by\s+", re.IGNORECASE)
+REC_NON_APPLICABLE_REASONS = {"non-applicable", "deferred", "out-of-scope"}
 
 
 def _coerce_json_payload(value: Any) -> Any:
@@ -464,6 +470,11 @@ class _HTMLSnapshotParser(HTMLParser):
         elif tag == "p":
             self._paragraph_open = True
             self._paragraph_text = []
+        elif tag == "br" and self._paragraph_open:
+            text = _normalize_text("".join(self._paragraph_text))
+            if text:
+                self.paragraphs.append(text)
+            self._paragraph_text = []
         elif tag == "a":
             self._link_href = attrs_dict.get("href") or ""
             self._link_text = []
@@ -644,12 +655,15 @@ def _validate_rec_implementation(manifest: dict, recommendations: dict) -> list[
                 issues.append(f"{rec_id} has no valid implementation entry")
             continue
         if implemented is False:
-            reason = str(entry.get("reason") or "").strip()
-            if reason in {"non-applicable", "data_missing"}:
+            raw_reason = str(entry.get("reason") or "").strip()
+            if not raw_reason:
+                issues.append(f"{rec_id} has non-implemented entry without required reason")
                 continue
-            if reason.startswith("superseded_by_") and len(reason) > len("superseded_by_"):
+            normalized_reason = raw_reason.lower().replace("_", "-")
+            if normalized_reason in REC_NON_APPLICABLE_REASONS:
                 continue
-            issues.append(f"{rec_id} has no valid implementation entry")
+            allowed = ", ".join(sorted(REC_NON_APPLICABLE_REASONS))
+            issues.append(f"{rec_id} has unsupported non-implemented reason '{raw_reason}' (allowed: {allowed})")
             continue
         issues.append(f"{rec_id} has no valid implementation entry")
     return issues
@@ -713,6 +727,72 @@ def _reviewer_plan(recommendations: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _split_visible_name_role(value: str) -> tuple[str, str]:
+    text = _normalize_text(value).strip(" -:·")
+    if not text:
+        return "", ""
+    is_match = re.match(r"^([A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+)+)\s+is\s+([^.;]+)", text)
+    if is_match:
+        return is_match.group(1).strip(), is_match.group(2).strip(" ,")
+    pieces = [piece.strip() for piece in re.split(r"\s+[·|-]\s+|,", text, maxsplit=1)]
+    name = pieces[0] if pieces else ""
+    role = pieces[1] if len(pieces) > 1 else ""
+    role = re.sub(r"\s*\([^)]*\)\s*$", "", role).strip(" .")
+    return name, role
+
+
+def _visible_author_blocks(snapshot: HTMLSnapshot) -> list[str]:
+    return [_normalize_text(item) for item in snapshot.paragraphs if _normalize_text(item)]
+
+
+def _visible_reviewer_candidate(snapshot: HTMLSnapshot) -> dict[str, str] | None:
+    for block in _visible_author_blocks(snapshot):
+        match = VISIBLE_REVIEWER_PREFIX_RE.match(block)
+        if not match:
+            continue
+        name, role = _split_visible_name_role(block[match.end():])
+        if not _has_first_and_last_name(name):
+            continue
+        if not role or not _role_is_reviewer_relevant(role):
+            continue
+        return {"display_name": name, "display_role": role, "block": block}
+    return None
+
+
+def _visible_standard_byline_for(snapshot: HTMLSnapshot, display_name: str) -> str:
+    normalized_name = _normalize_text(display_name).lower()
+    if not normalized_name:
+        return ""
+    for block in _visible_author_blocks(snapshot):
+        if not VISIBLE_BYLINE_PREFIX_RE.match(block):
+            continue
+        if normalized_name in block.lower():
+            return block
+    return ""
+
+
+def _visible_reviewer_block_for(snapshot: HTMLSnapshot, display_name: str) -> str:
+    normalized_name = _normalize_text(display_name).lower()
+    if not normalized_name:
+        return ""
+    for block in _visible_author_blocks(snapshot):
+        if not VISIBLE_REVIEWER_PREFIX_RE.match(block):
+            continue
+        if normalized_name in block.lower():
+            return block
+    return ""
+
+
+def _reviewer_promotion_detail(display_name: str, source_author: str, source_role: str) -> str:
+    if source_author and source_role:
+        source_context = f"source author '{source_author}, {source_role}' rejected as weak role"
+    elif source_author:
+        source_context = f"source author '{source_author}' rejected as weak role"
+    else:
+        source_context = "source author absent"
+    return f"{display_name} promoted as trust signal from rendered reviewer block ({source_context})."
+
+
 def _validate_author(
     article: dict[str, Any],
     recommendations: dict[str, Any],
@@ -734,6 +814,23 @@ def _validate_author(
     reviewer_role = str((selected_reviewer or {}).get("role") or "").strip()
     display_name = str(review_plan.get("display_name") or reviewer_name or schema_author_name or source_author or "").strip()
     display_role = str(review_plan.get("display_role") or reviewer_role or schema_author_role or source_role or "").strip()
+    visible_reviewer = _visible_reviewer_candidate(snapshot)
+    if visible_reviewer:
+        standard_byline = _visible_standard_byline_for(snapshot, display_name)
+        reviewer_matches_display = visible_reviewer["display_name"].lower() == display_name.lower()
+        should_promote_visible_reviewer = (
+            not standard_byline
+            and (
+                reviewer_matches_display
+                or _is_weak_byline(display_name)
+                or not _role_is_reviewer_relevant(display_role)
+            )
+        )
+        if should_promote_visible_reviewer:
+            display_name = visible_reviewer["display_name"]
+            display_role = visible_reviewer["display_role"]
+            reviewer_id = None
+            selected_reviewer = None
     visible = snapshot.visible_text.lower()
     uses_article_author = bool(source_author) and display_name.lower() == source_author.lower()
     author_fallback_available = not reviewers and not reviewer_id and uses_article_author
@@ -796,6 +893,11 @@ def _validate_author(
         result["detail"] = "Author role is too weak to act as a reviewer-backed trust signal."
         return result
 
+    if _visible_reviewer_block_for(snapshot, display_name) and not _visible_standard_byline_for(snapshot, display_name):
+        result["source"] = "reviewers_promoted"
+        result["detail"] = _reviewer_promotion_detail(display_name, source_author, source_role)
+        return result
+
     result["detail"] = f"{display_name} is a visible full-name reviewer with a rendered role line."
     return result
 
@@ -837,9 +939,10 @@ def _validate_trust_block(author_validation: dict[str, Any], reviewers: list[dic
     author_passed = author_validation.get("status") == "passed"
     display_name = str(author_validation.get("display_name") or "").strip()
     if author_passed and display_name:
+        source = str(author_validation.get("source") or "author_validation").strip() or "author_validation"
         return {
             "passed": True,
-            "source": "author_validation",
+            "source": source,
             "author_name": display_name,
         }
     promoted_reviewer = _strong_reviewer_from(reviewers)
