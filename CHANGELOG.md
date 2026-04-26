@@ -2,6 +2,69 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.6.6] — 2026-04-26
+
+Iteration 9 — final integration of the v0.6 release line. Closes the
+4 residual issues from the v0.6.5 verification smoke YELLOW (manifest
+contract drift on rec_implementation_map non-applicable entries, trust
+block source mislabeling for the visible-reviewer-block promotion path,
+and recurring recommender retry banners on count-bound and per-rec prompt
+minimum). Spec at `specs/2026-04-26-bugs-iteration9.md`.
+
+This is the FIRST iteration to use the new `parallel-agent-orchestration`
+skill (`~/.claude/skills/parallel-agent-orchestration/SKILL.md`,
+synchronized to `~/.codex/skills/`). Two Codex agents (gpt-5.5,
+reasoning_effort high) ran in parallel in fully isolated git worktrees
+(`lane-m-iter9` and `lane-n-iter9` off `feat/v0.6.0-integration`). Zero
+cross-contamination between lanes — the iter8 worktree-sharing footgun is
+now closed.
+
+### Lane M — validator (dashboard/quality_gate.py)
+- **Bug 22** — rec_implementation_map validator now accepts BOTH the
+  implemented shape from Bug 15 (`{implemented: true, section, anchor,
+  schema_fields, evidence_inserted, notes}`) AND the non-applicable
+  sentinel shape (`{implemented: false, reason: <enum>}` where reason ∈
+  `{"non-applicable", "deferred", "out-of-scope"}`, case-insensitive,
+  hyphen and underscore both accepted). Entries with `implemented: false`
+  but no `reason` field are rejected with a clear banner; undocumented
+  reason values are also rejected. The verifier's downstream C2 check
+  no longer flags valid sentinel entries as shape failures.
+- **Bug 23** — when the optimised draft contains BOTH a source author
+  byline (typically rejected as weak role) AND a "Reviewed by" / "Edited
+  by" / "Verified by" / "Reviewer:" block (case-insensitive, anchored to
+  start of line or paragraph), the validator now labels
+  `trust_block.source = "reviewers_promoted"` and adds an
+  `author_validation.detail` entry that explains the promotion. Bug 18's
+  source contract is extended: `source ∈ {"author_validation",
+  "reviewers_json", "reviewers_promoted", "article_author_fallback"}`.
+  `"reviewers_json"` remains for Bug 19's data-table promotion path;
+  `"reviewers_promoted"` is the new visible-block promotion path.
+
+### Lane N — recommender (agents/recommender.md)
+- **Bug 24** — recommender prompt now explicitly enforces the 3-8
+  LLM-source recommendation count for `peec-prompt-matched` articles
+  with merge-or-drop guidance for the lowest-priority candidates. Closes
+  the recurring "LLM-source recommendation count must be 3-8 for
+  peec-prompt-matched; got 9 (or 10)" validator retry banner that
+  appeared in every smoke run from Round 4 through v0.6.5 verification.
+- **Bug 25** — recommender prompt now requires `addresses_prompts` ≥ 3
+  per recommendation, with explicit guidance on broadening to adjacent
+  prompts in the same topic cluster or engine, or dropping the rec if
+  too narrow to be cost-effective. Closes the recurring "rec-NNN
+  addresses_prompts must contain at least 3 prompt ids" validator retry
+  banner.
+
+### Acceptance tests
+- tests/bug_22_rec_map_non_applicable_shape_test.md (Lane M)
+- tests/bug_23_trust_block_visible_reviewer_source_test.md (Lane M)
+- tests/bug_24_recommender_count_cap_test.md (Lane N)
+- tests/bug_25_addresses_prompts_minimum_test.md (Lane N)
+
+### Origin
+v0.6.5 verification smoke `2026-04-26T11-26-06`. Spec at
+`specs/2026-04-26-bugs-iteration9.md`. First iteration to validate the
+`parallel-agent-orchestration` skill end-to-end.
+
 ## [0.6.5] — 2026-04-26
 
 Iteration 8 fixes from the v0.6.4 verification smoke `2026-04-26T10-13-57`
