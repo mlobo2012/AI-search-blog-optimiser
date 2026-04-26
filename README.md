@@ -4,7 +4,7 @@
 
 Give AI Search Blog Optimiser a company blog URL. It indexes the blog, learns and reuses the brand voice, reads Peec MCP data, creates GEO recommendations, and uses a writer agent to turn existing posts into optimised articles.
 
-It is built for teams that want to refresh owned content every week or month as AI results change, without manually reviewing every prompt, competitor page, cited source, and article rewrite.
+It is built for regular GEO blog optimisation: review owned content every 2-4 weeks, identify which posts are falling behind competitors or missing from AI answers, and refresh the pages that can win back visibility.
 
 Impact: turn an existing blog into a repeatable AI-search optimisation loop, so product marketers and content teams can improve 40, 50, or 100 articles with the same process instead of doing one-off audits.
 
@@ -58,7 +58,7 @@ The work usually looks like this:
 7. Hand it to a writer or product marketer.
 8. Rewrite the article.
 9. Check that the rewrite added the TL;DR, evidence, links, schema, FAQ, trust block, and prompt-shaped sections.
-10. Repeat next week because AI answers and citation surfaces change.
+10. Repeat every few weeks because competitors publish, category language shifts, product claims change, and AI engines update which owned pages they trust.
 
 That may be manageable for one or two posts. It breaks down across 40, 50, or 100 articles. At that scale it is not possible to maintain manually as a dynamic system that keeps improving every week and month as the category and market move.
 
@@ -136,7 +136,9 @@ This is the difference: recommendations are based on Peec visibility data, top-c
 
 The writer agent then used the recommendations and source article to create a new optimised article.
 
-It added a clear TL;DR:
+It added a clear TL;DR section at the top of the article:
+
+**TL;DR**
 
 > We've rebuilt Granola Chat from the ground up as an agentic assistant. It searches across all your meeting notes - personal notes, Team Space, and privately shared notes - and returns answers with inline citations that link to the source meeting. Works with Google Meet, Zoom, and Microsoft Teams.
 
@@ -163,23 +165,25 @@ For each article, the workflow returns:
 - a handoff note for the content team
 - a manifest showing what passed and what blocked
 
-## Why Run This Weekly?
+## Regular GEO Blog Optimisation
 
-AI search changes quickly.
+Owned content is not static in AI search.
 
-Competitors get added to roundups. New Reddit threads appear. Product pages get cited. Sentiment shifts. Your own blog might already have the right raw material, but not the right structure.
+The article that wins today can lose ground when a competitor publishes a stronger comparison page, updates a product claim, adds fresher evidence, earns a citation from a trusted source, or starts appearing more consistently across the same prompts your buyers ask. Your own positioning also changes: new features ship, proof points improve, customer language gets sharper, and old launch posts stop matching how the category is now described.
 
-This workflow lets a product marketer or content lead run the same process every week:
+That is why the sweet spot is usually a 2-4 week optimisation cycle. It is frequent enough to catch movement in Peec visibility, competitor presence, cited domains, sentiment, and source gaps, but not so frequent that teams rewrite pages before there is enough signal to learn from.
+
+This workflow lets a product marketer or content lead run the same process every 2-4 weeks:
 
 1. Crawl the blog.
 2. Reuse the saved brand voice.
-3. Pull fresh Peec visibility data.
-4. Find which owned posts can be improved.
-5. Generate recommendations at scale.
+3. Pull fresh Peec visibility, competitor, source, sentiment, and action data.
+4. Find which owned posts are missing, stale, under-structured, or being beaten by competitor pages.
+5. Generate recommendations for the next batch of 5-10 articles.
 6. Let the writer agent turn those recommendations into optimised articles.
 7. Send markdown and handoff notes to the content team.
 
-That is the core value: not a one-off audit, but a repeatable owned-content optimisation loop.
+That is the core value: not a one-off audit, but a repeatable owned-content optimisation loop that keeps your blog aligned with how the category, your brand, and competitor visibility are moving.
 
 ## Install And Run
 
