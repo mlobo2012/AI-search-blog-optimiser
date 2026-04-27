@@ -4,7 +4,7 @@
 
 ## TL;DR
 
-A Claude Code and Claude Cowork plugin for rewrite-only blog optimisation aimed at AI-search citation. It crawls an existing blog with Crawl4AI MCP as the primary tested crawler, supports Firecrawl MCP as an additional crawler, builds a site-scoped brand voice baseline, generates evidence-grounded recommendations, and either produces an optimised rewrite or blocks the article truthfully in a local report dashboard.
+A Claude Code and Claude Cowork plugin for rewrite-only blog optimisation aimed at AI-search citation. It crawls an existing blog with Crawl4AI MCP, builds a site-scoped brand voice baseline, generates evidence-grounded recommendations, and either produces an optimised rewrite or blocks the article truthfully in a local report dashboard.
 
 Give AI Search Blog Optimiser a company blog URL. It indexes the blog, learns and reuses the brand voice, reads Peec MCP data, creates GEO recommendations, and uses a writer agent to turn existing posts into optimised articles.
 
@@ -50,13 +50,13 @@ For targeted work, pass one or more exact article URLs:
 
 When `--article-url` is present, the crawler skips index discovery and processes only the supplied URLs in that order. It does not backfill with recent posts, related posts, sitemap URLs, or inferred substitutes.
 
-## Crawl Backends
+## Crawl Backend
 
-The plugin can crawl through Crawl4AI MCP or Firecrawl MCP:
+The plugin crawls through Crawl4AI MCP:
 
-- Crawl4AI MCP is the primary crawler used for testing. The tested path is the official Crawl4AI Docker server exposed at `http://localhost:11235/mcp/sse` and added to Claude as `c4ai-sse`.
-- Firecrawl MCP should work too when Claude exposes a connected tool family with `firecrawl_scrape` and `firecrawl_map`.
-- MCP server names are discovered by capability for Peec and Firecrawl. For Crawl4AI, use the `c4ai-sse` name because the plugin's fallback prompts call the official Crawl4AI `md`, `html`, and `screenshot` tools through that prefix.
+- Crawl4AI MCP works with the plugin.
+- The local setup uses the official Crawl4AI Docker server exposed at `http://localhost:11235/mcp/sse` and added to Claude as `c4ai-sse`.
+- Use the `c4ai-sse` name because the plugin calls the official Crawl4AI `md`, `html`, and `screenshot` tools through that prefix.
 
 On macOS, install Docker Desktop and start Crawl4AI locally:
 
@@ -88,14 +88,6 @@ For Claude Desktop or Claude Cowork on Mac, use a local stdio bridge in the MCP 
 }
 ```
 
-If you already use Firecrawl, add it with a local private scope:
-
-```bash
-claude mcp add firecrawl -e FIRECRAWL_API_KEY=your-api-key -- npx -y firecrawl-mcp
-```
-
-For Claude Cowork/Desktop, connect Firecrawl MCP with the same local stdio pattern or Firecrawl's hosted MCP endpoint if your client supports streamable HTTP. Keep API keys in the MCP client configuration, not in the plugin repository.
-
 For your own blog:
 
 ```text
@@ -116,7 +108,7 @@ What happens:
 
 - the dashboard opens for the run
 - the blog index is crawled
-- the plugin pulls article content through Crawl4AI MCP or Firecrawl MCP
+- the plugin pulls article content through Crawl4AI MCP
 - brand voice is generated and saved for reuse in later runs
 - Peec data is used to find where the brand is missing in AI answers
 - competitor and top-cited source patterns are used to shape the recommendations
@@ -191,8 +183,7 @@ Most useful for publishing handoff:
 - Same-site voice reuse is automatic unless `--refresh-voice` is set.
 - Peec is required. Missing Peec should block the run or article instead of silently downgrading to a GEO-only rewrite.
 - Peec MCP discovery is capability-based, not server-name-based. In Cowork, a valid external Peec MCP may appear under a UUID-style tool prefix instead of `mcp__peec__...`.
-- Crawl4AI MCP is the primary tested crawler and should be connected as `c4ai-sse`.
-- Firecrawl MCP discovery is capability-based, not server-name-based. In Cowork, a valid external Firecrawl MCP may appear under a UUID-style tool prefix instead of `mcp__firecrawl__...`.
+- Crawl4AI MCP should be connected as `c4ai-sse`.
 - The dashboard is a read-only report surface. It should not own orchestration or continue controls.
 - `write_json_artifact` expects raw JSON objects or arrays. The runtime now normalizes accidentally stringified JSON payloads for backward compatibility.
 - Core pipeline writes should use typed dashboard tools so artifact persistence and state updates happen atomically.
@@ -428,7 +419,7 @@ The plugin expects a Peec project with:
 
 ### 4. Make Crawl4AI MCP available
 
-The workflow is tested primarily with Crawl4AI MCP. Start the local Crawl4AI server on your Mac, add it as `c4ai-sse`, and keep it running while you use the plugin:
+The workflow uses Crawl4AI MCP. Start the local Crawl4AI server on your Mac, add it as `c4ai-sse`, and keep it running while you use the plugin:
 
 ```bash
 docker run -d \
@@ -457,7 +448,7 @@ Claude Desktop or Claude Cowork on Mac:
 }
 ```
 
-The Desktop/Cowork bridge pattern requires Node/npm for `npx`. Firecrawl MCP should work too when Claude exposes `firecrawl_map` and `firecrawl_scrape`, but Crawl4AI MCP is the primary tested crawler. If neither crawler is connected, the command stops during prereqs before creating a run.
+The Desktop/Cowork bridge pattern requires Node/npm for `npx`. If Crawl4AI MCP is not connected, the command stops during prereqs before creating a run.
 
 ### 5. Run the Granola example
 
