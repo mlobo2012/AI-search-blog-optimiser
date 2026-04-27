@@ -18,7 +18,7 @@ Impact: improve 40, 50, or 100 existing articles with the same evidence-led proc
 
 ### Claude Code
 
-Install the marketplace plugin inside Claude Code:
+Install the plugin from the AI Heroes GitHub marketplace inside Claude Code. This is a custom Claude Code marketplace, not the official Anthropic marketplace:
 
 ```text
 /plugin marketplace add mlobo2012/AI-search-blog-optimiser
@@ -376,7 +376,7 @@ That is the core value: not a one-off audit, but a repeatable owned-content opti
 
 ### 1. Install the plugin in Claude Code
 
-Claude Code installs plugins through marketplaces. This repo includes `.claude-plugin/marketplace.json`, so you can add the GitHub repo as a marketplace and install the plugin by name:
+Claude Code supports custom plugin marketplaces as GitHub repos. This is not listed in the official Anthropic marketplace; this repo includes `.claude-plugin/marketplace.json`, so you can add the AI Heroes GitHub repo as a marketplace and install the plugin by name:
 
 ```text
 /plugin marketplace add mlobo2012/AI-search-blog-optimiser

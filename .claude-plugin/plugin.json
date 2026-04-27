@@ -1,6 +1,6 @@
 {
   "name": "ai-search-blog-optimiser",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Multi-agent blog optimiser for AI search (GEO). Crawls a blog, extracts brand voice, reads your Peec AI gaps, benchmarks against competitors currently cited by AI engines, and rewrites articles with evidence-grounded recommendations. Runs as a live local dashboard.",
   "author": {
     "name": "AI Heroes"

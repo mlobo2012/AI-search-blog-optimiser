@@ -2,6 +2,14 @@
 
 All notable changes to the AI Search Blog Optimiser plugin.
 
+## [0.7.1] — 2026-04-27
+
+Claude Code marketplace install fix.
+
+- Changed the marketplace plugin source to the relative repo checkout (`"./"`) so installs use the custom AI Heroes GitHub marketplace cache instead of attempting a separate SSH clone of the same repo.
+- Clarified that the Claude Code install path uses a custom AI Heroes GitHub marketplace, not the official Anthropic marketplace.
+- Bumped plugin metadata to `0.7.1` so fresh installs and cached marketplace refreshes pick up the corrected install manifest.
+
 ## [0.7.0] — 2026-04-27
 
 Crawler support plus Claude Code and Claude Cowork distribution clarity.
