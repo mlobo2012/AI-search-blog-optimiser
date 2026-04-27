@@ -19,7 +19,8 @@ This playbook is executed by the main session when `/blog-optimiser` runs. The m
 - Leaf workers must use the dashboard MCP artifact tools for host-side reads and writes.
 - The absolute paths returned by `register_run` are for host-side MCP `output_path` arguments only. Do not use them with sandboxed `Bash`, `Read`, or `Write`.
 - Never assume the Peec MCP server prefix is literally `peec`. In Cowork, external MCP servers can appear under UUID-based prefixes.
-- Never assume the Firecrawl MCP server prefix is literally `firecrawl`. Discover Firecrawl by capability (`firecrawl_scrape`, `firecrawl_map`) and prefer it when it is connected.
+- Crawl4AI MCP is the primary tested crawler. Expect the official local Crawl4AI server to be connected as `c4ai-sse`.
+- Never assume the Firecrawl MCP server prefix is literally `firecrawl`. Discover Firecrawl by capability (`firecrawl_scrape`, `firecrawl_map`) and use it as the supported alternative when Crawl4AI is unavailable or explicitly selected.
 
 ## Pipeline stages
 
@@ -46,7 +47,18 @@ Run prerequisites before creating or opening anything:
      `mcp__57fe1a18-bd7d-47fc-846e-bb20a3bdb291__list_projects`.
    - If such a tool family exists, load it and use its `list_projects` tool to match the project.
    - If no Peec tool family exists, stop immediately. Peec is required for this product.
-2. Use `ToolSearch` to discover whether a connected Firecrawl MCP is available.
+2. Probe Crawl4AI first with:
+
+```json
+{
+  "url": "https://example.com/"
+}
+```
+
+using `mcp__c4ai-sse__md`.
+
+Treat success as a small, non-empty response and set `crawl_backend = "crawl4ai"`. This is the primary tested crawler path.
+3. If Crawl4AI is not connected or its tiny probe fails, use `ToolSearch` to discover whether a connected Firecrawl MCP is available.
    - Look for tools that expose the Firecrawl capability set: `firecrawl_scrape` and `firecrawl_map`.
    - Do not assume the tool prefix is `mcp__firecrawl__`. A valid connected Firecrawl MCP may look like
      `mcp__57fe1a18-bd7d-47fc-846e-bb20a3bdb291__firecrawl_scrape`.
@@ -62,17 +74,7 @@ Run prerequisites before creating or opening anything:
 
 using the discovered `firecrawl_scrape` tool.
    - Treat success as a small, non-empty response and set `crawl_backend = "firecrawl"`.
-3. If Firecrawl is not connected or its tiny probe fails, probe Crawl4AI with:
-
-```json
-{
-  "url": "https://example.com/"
-}
-```
-
-using `mcp__c4ai-sse__md`.
-
-Treat success as a small, non-empty response and set `crawl_backend = "crawl4ai"`. If Firecrawl was connected but failed and Crawl4AI succeeds, show a warning banner after registration explaining that the run fell back to Crawl4AI. If neither Firecrawl nor Crawl4AI is available, stop immediately. Do not open the dashboard.
+If Crawl4AI failed but Firecrawl succeeds, show a warning banner after registration explaining that the run is using Firecrawl because Crawl4AI was not available. If neither Crawl4AI nor Firecrawl is available, stop immediately. Do not open the dashboard.
 Do not emit "No Peec connection" unless you first attempted capability-based discovery via `ToolSearch`.
 If no Peec project matches the blog or brand, stop immediately instead of running a GEO-only fallback.
 

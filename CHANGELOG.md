@@ -4,14 +4,15 @@ All notable changes to the AI Search Blog Optimiser plugin.
 
 ## [0.7.0] — 2026-04-27
 
-Firecrawl MCP support plus Claude Code and Claude Cowork distribution clarity.
+Crawler support plus Claude Code and Claude Cowork distribution clarity.
 
-- Added capability-based Firecrawl discovery (`firecrawl_scrape` + `firecrawl_map`) so the plugin can use a connected Firecrawl MCP server even when Cowork exposes it under a UUID-style prefix.
-- Kept Crawl4AI MCP as the fallback crawl/fetch backend when Firecrawl is absent or its prereq probe fails.
+- Documented Crawl4AI MCP as the primary tested crawl/fetch backend, using the official local server at `http://localhost:11235/mcp/sse` connected as `c4ai-sse`.
+- Added macOS-oriented Crawl4AI MCP setup guidance for Claude Code and Claude Desktop/Cowork.
+- Added capability-based Firecrawl discovery (`firecrawl_scrape` + `firecrawl_map`) so the plugin can still use a connected Firecrawl MCP server even when Cowork exposes it under a UUID-style prefix.
 - Persisted the selected crawl backend in run state and pass it through to the crawler and evidence-fetching agents.
 - Hardened recommendation prompt-id validation and generator scope checks based on the Firecrawl smoke run.
 - Added a Claude Code marketplace catalog at `.claude-plugin/marketplace.json`.
-- Updated README guidance for separate Claude Code and Claude Cowork installation paths, including Firecrawl MCP setup.
+- Updated README guidance for separate Claude Code and Claude Cowork installation paths, including Crawl4AI MCP and Firecrawl MCP setup.
 - Bumped plugin metadata to `0.7.0` so the Claude Code marketplace install and Cowork release page use the same public version.
 
 ## [0.6.9] — 2026-04-26
